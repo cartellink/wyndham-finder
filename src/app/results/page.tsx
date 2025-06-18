@@ -6,7 +6,7 @@ import ResortCard from '@/components/ResortCard'
 import SearchFilters from '@/components/SearchFilters'
 import { GridIcon, ListIcon } from 'lucide-react'
 
-// Mock data for resorts
+// Mock data for resorts  
 const mockResorts = [
   {
     id: 1,
@@ -126,10 +126,10 @@ export default function ResultsPage() {
           <div className="lg:w-1/4">
             <SearchFilters 
               searchCriteria={searchCriteria}
-                             onFiltersChange={(filters: any) => {
-                 // Apply filters to resorts
-                 console.log('Filters changed:', filters)
-               }}
+                                           onFiltersChange={(filters) => {
+                // Apply filters to resorts
+                console.log('Filters changed:', filters)
+              }}
             />
           </div>
 
