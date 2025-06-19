@@ -16,11 +16,6 @@ export async function GET(request: Request) {
     
     console.log('✅ Scraping completed:', scrapeResult)
     
-    // Here you would typically:
-    // 1. Save results to Supabase database
-    // 2. Send notifications if new availability found
-    // 3. Update cache/search indexes
-    
     return NextResponse.json({
       success: true,
       message: 'Inventory scraping completed successfully',
@@ -41,22 +36,32 @@ export async function GET(request: Request) {
   }
 }
 
-// Optional: Handle POST requests for manual triggers
-export async function POST(request: Request) {
+// Handle POST requests for manual triggers (from the dashboard)
+export async function POST() {
   try {
-    const body = await request.json()
-    console.log('🔄 Manual scraping triggered:', body)
+    console.log('🔄 Manual scraping triggered from dashboard')
     
-    // Same scraping logic as GET
+    // Import and run the scraping function (now with built-in monitoring)
+    const { scrapeWyndhamInventory } = await import('@/lib/scraper/wyndham-scraper')
+    const scrapeResult = await scrapeWyndhamInventory()
+    
+    console.log('✅ Manual scraping completed:', scrapeResult)
+    
     return NextResponse.json({
       success: true,
-      message: 'Manual scraping triggered successfully'
+      message: 'Manual scraping completed successfully',
+      data: scrapeResult
     })
     
   } catch (error) {
     console.error('❌ Manual scraping failed:', error)
+    
     return NextResponse.json(
-      { success: false, error: 'Failed to trigger manual scraping' },
+      { 
+        success: false, 
+        error: 'Manual scraping failed',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      },
       { status: 500 }
     )
   }

@@ -11,10 +11,6 @@ export interface ScrapingResult {
 }
 
 // Type definitions
-interface LoginResponse {
-  status: string
-  [key: string]: unknown
-}
 
 interface Location {
   id: string
@@ -67,6 +63,37 @@ interface ApiPayload {
   [key: string]: string | number | null | undefined
 }
 
+// Monitoring interface
+interface MonitoringUpdate {
+  isRunning?: boolean
+  currentStep?: string
+  progress?: {
+    resorts?: { processed: number; total: number }
+    rooms?: { processed: number; total: number }
+    availability?: { processed: number; total: number }
+  }
+  log?: {
+    level: 'info' | 'error' | 'success' | 'warning'
+    message: string
+    details?: unknown
+  }
+  apiCall?: {
+    timestamp: string
+    url: string
+    method: string
+    status: number
+    duration: number
+    payload?: unknown
+    response?: unknown
+    error?: boolean
+  }
+  stats?: {
+    totalRequests?: number
+    successfulRequests?: number
+    errors?: number
+  }
+}
+
 import * as cheerio from 'cheerio'
 import axios, { AxiosInstance } from 'axios'
 import { CookieJar } from 'tough-cookie'
@@ -77,12 +104,104 @@ import * as dbResorts from '../models/resorts'
 import * as dbRooms from '../models/rooms'  
 import * as dbAvailabilities from '../models/availabilities'
 import '../promiseAllConcurrent'
+import { intelligentScheduler } from './intelligent-scheduler'
+import { authSessionManager } from './auth-session-manager'
+import { supabase } from '../supabase'
 
-// Configure axios with cookie support
+// Configure axios with cookie support - like request.jar()
 const jar = new CookieJar()
 const client: AxiosInstance = wrapper(axios.create({ jar, timeout: 30000 }))
 
 const baseUrl = 'http://clubwyndhamsp.com'
+
+
+
+// Monitoring helper
+class ScrapingMonitor {
+  private baseUrl = process.env.NODE_ENV === 'development' 
+    ? 'http://localhost:3000' 
+    : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : ''
+    
+  private stats = {
+    totalRequests: 0,
+    successfulRequests: 0,
+    errors: 0
+  }
+
+  async updateStatus(update: MonitoringUpdate) {
+    try {
+      if (!this.baseUrl) return
+      
+      await fetch(`${this.baseUrl}/api/admin/scraping-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(update)
+      })
+    } catch {
+      // Silently fail - don't interrupt scraping for monitoring issues
+    }
+  }
+
+  async logApiCall(url: string, method: string, status: number, duration: number, payload?: unknown, response?: unknown, fullResponseData?: unknown) {
+    this.stats.totalRequests++
+    if (status >= 200 && status < 400) {
+      this.stats.successfulRequests++
+    } else {
+      this.stats.errors++
+    }
+
+    // For errors or important responses, capture full details
+    let responseForLogging = response
+    if (status === 0 || status >= 400 || (fullResponseData && typeof fullResponseData === 'object')) {
+      // Keep full response data for errors or structured responses
+      responseForLogging = fullResponseData || response
+    } else if (typeof response === 'string' && response.length > 200) {
+      // Only truncate long string responses for successful calls
+      responseForLogging = response.substring(0, 200) + '...'
+    }
+
+    await this.updateStatus({
+      apiCall: {
+        timestamp: new Date().toISOString(),
+        url,
+        method,
+        status,
+        duration,
+        payload,
+        response: responseForLogging,
+        error: status === 0 || status >= 400 ? true : undefined
+      },
+      stats: this.stats
+    })
+  }
+
+  async log(level: 'info' | 'error' | 'success' | 'warning', message: string, details?: unknown) {
+    const loggerMethod = level === 'success' ? 'info' : level === 'warning' ? 'warn' : level
+    logger[loggerMethod](message, details)
+    await this.updateStatus({
+      log: { level, message, details }
+    })
+  }
+
+  async setStep(step: string) {
+    await this.updateStatus({ currentStep: step })
+  }
+
+  async setRunning(isRunning: boolean) {
+    await this.updateStatus({ isRunning })
+  }
+
+  async updateProgress(type: 'resorts' | 'rooms' | 'availability', processed: number, total: number) {
+    await this.updateStatus({
+      progress: {
+        [type]: { processed, total }
+      }
+    })
+  }
+}
+
+// Global monitor instance
+const monitor = new ScrapingMonitor()
 
 // Helper function to extract JavaScript variables from HTML
 const findTextAndReturnRemainder = (target: string, variable: string): string => {
@@ -91,119 +210,338 @@ const findTextAndReturnRemainder = (target: string, variable: string): string =>
   return result
 }
 
-// Make API calls to Club Wyndham
-const callApi = async (payload: ApiPayload): Promise<unknown> => {
-  logger.info('callApi start')
+// Make API calls to Club Wyndham with monitoring and session recovery
+const callApi = async (payload: ApiPayload, retryCount: number = 0): Promise<unknown> => {
   const url = 'https://clubwyndhamsp.com/wp-admin/admin-ajax.php'
+  const startTime = Date.now()
   
-  // Extract sensitive data for logging purposes, but don't log them
-  const { memberid, password, ...rest } = payload
-  void memberid // Suppress unused variable warning
-  void password // Suppress unused variable warning
-  logger.info(JSON.stringify(rest, null, 2))
-  
-  // Convert payload to URLSearchParams format
-  const params = new URLSearchParams()
-  Object.entries(payload).forEach(([key, value]) => {
-    if (value !== null && value !== undefined) {
-      params.append(key, String(value))
-    }
-  })
-  
-  const response = await client.post(url, params, {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    }
-  })
+  try {
+    logger.info('callApi start')
+    
+    // Extract sensitive data for logging purposes, but don't log them
+    const { memberid, password, ...rest } = payload
+    void memberid // Suppress unused variable warning
+    void password // Suppress unused variable warning
+    logger.info(JSON.stringify(rest, null, 2))
+    
+    // Use form data directly like the request-promise example
+    const response = await client.post(url, payload, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      }
+    })
 
-  logger.info('callApi end')
-  return response.data
+    const duration = Date.now() - startTime
+    
+    // Check for session expiration indicators in response
+    if (response.data === "0" || response.data === "-1" || 
+        (typeof response.data === 'string' && response.data.includes('login'))) {
+      
+      // Possible session expiration - try to re-authenticate once
+      if (retryCount === 0) {
+        await monitor.log('warning', '⚠️ API call returned session-expired response, attempting re-authentication...')
+        
+        const reAuthSuccess = await ensureAuthenticated()
+        if (reAuthSuccess) {
+          await monitor.log('info', '🔄 Re-authentication successful, retrying API call...')
+          return await callApi(payload, retryCount + 1) // Retry with re-auth
+        } else {
+          await monitor.log('error', '❌ Re-authentication failed')
+          throw new Error('Session expired and re-authentication failed')
+        }
+      } else {
+        await monitor.log('error', '❌ API call failed even after re-authentication')
+        throw new Error('API call failed after re-authentication attempt')
+      }
+    }
+    
+    // Log full response data for better debugging
+    await monitor.logApiCall(url, 'POST', response.status, duration, rest, 'Success', response.data)
+
+    logger.info('callApi end')
+    return response.data
+    
+  } catch (error) {
+    const duration = Date.now() - startTime
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    
+    // Extract sensitive data for logging purposes, but don't log them
+    const { memberid, password, ...restForError } = payload
+    void memberid // Suppress unused variable warning
+    void password // Suppress unused variable warning
+    
+    const errorDetails = {
+      error: errorMessage,
+      stack: error instanceof Error ? error.stack : undefined,
+      axiosError: error && typeof error === 'object' && 'response' in error ? {
+        status: (error as unknown as { response?: { status?: number } }).response?.status,
+        statusText: (error as unknown as { response?: { statusText?: string } }).response?.statusText,
+        data: (error as unknown as { response?: { data?: unknown } }).response?.data,
+        headers: (error as unknown as { response?: { headers?: unknown } }).response?.headers
+      } : undefined
+    }
+    
+    await monitor.logApiCall(url, 'POST', 0, duration, restForError, errorMessage, errorDetails)
+    throw error
+  }
+}
+
+// Test if current session is valid by making a simple API call
+const testSessionValidity = async (security: string): Promise<boolean> => {
+  try {
+    await monitor.log('info', '🧪 Testing session validity...')
+    
+    // Make a simple API call that requires authentication
+    const payload: ApiPayload = {
+      action: 'filter_resort_by_region',
+      iris_region: '690', // Use a known region ID for testing
+      security
+    }
+
+    const response = await callApi(payload)
+    
+    // If we get a valid response (not "0" or "-1"), session is good
+    if (response && response !== "0" && response !== "-1" && Array.isArray(response)) {
+      await monitor.log('success', `✅ Session is valid - got ${(response as unknown[]).length} resorts`)
+      return true
+    } else {
+      await monitor.log('warning', `⚠️ Session may be invalid - response: ${JSON.stringify(response).substring(0, 100)}`)
+      return false
+    }
+  } catch (error) {
+    await monitor.log('warning', '⚠️ Session validity test failed, may need re-authentication', error)
+    return false
+  }
 }
 
 // Get security nonce from the main page
 const getSecurity = async (): Promise<string> => {
-  const response = await client.get(baseUrl)
-  const $ = cheerio.load(response.data)
-  const text = $('#custom-js-extra').html()
+  const startTime = Date.now()
   
-  if (!text) {
-    throw new Error('Could not find security nonce')
+  try {
+    const response = await client.get(baseUrl)
+    const $ = cheerio.load(response.data)
+    const text = $('#custom-js-extra').html()
+    
+    if (!text) {
+      throw new Error('Could not find security nonce')
+    }
+    
+    const findAndClean = findTextAndReturnRemainder(text, 'var ajax_object =')
+    const ajaxObject = JSON.parse(findAndClean) as { ajax_nonce: string }
+    
+    const duration = Date.now() - startTime
+    await monitor.logApiCall(baseUrl, 'GET', response.status, duration, undefined, 'Security nonce extracted', { nonce: ajaxObject.ajax_nonce })
+    
+    return ajaxObject.ajax_nonce
+  } catch (error) {
+    const duration = Date.now() - startTime
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    const errorDetails = {
+      error: errorMessage,
+      stack: error instanceof Error ? error.stack : undefined,
+      possibleCause: 'Failed to extract security nonce from page'
+    }
+    await monitor.logApiCall(baseUrl, 'GET', 0, duration, undefined, errorMessage, errorDetails)
+    throw error
   }
-  
-  const findAndClean = findTextAndReturnRemainder(text, 'var ajax_object =')
-  const ajaxObject = JSON.parse(findAndClean) as { ajax_nonce: string }
-  
-  return ajaxObject.ajax_nonce
 }
 
-// Login to Club Wyndham
-const login = async (security: string): Promise<LoginResponse> => {
-  logger.info('login start')
-
-  const payload: ApiPayload = {
-    action: 'whpp_login',
-    memberid: process.env.WYNDHAM_MEMBER_ID,
-    password: process.env.WYNDHAM_PASSWORD,
-    security
-  }
-
-  const loginResponse = await callApi(payload) as LoginResponse
+// Simple authentication that just loads PHPSESSID from database
+const ensureAuthenticated = async (): Promise<boolean> => {
+  await monitor.log('info', '🔐 Loading authentication session...')
   
-  if (loginResponse.status === "SUCCESS") {
-    logger.info('login success')
-  } else {
-    throw new Error('Login failed: ' + JSON.stringify(loginResponse))
-  }
+  try {
+    // Try to load existing session from database
+    const { data: session, error } = await supabase
+      .from('auth_sessions')
+      .select('*')
+      .eq('id', 'wyndham-auth')
+      .eq('is_valid', true)
+      .gte('expires_at', new Date().toISOString())
+      .single()
 
-  logger.info('login end')
-  return loginResponse
+    if (session && !error) {
+      await monitor.log('info', '🍪 Found valid session in database, extracting PHPSESSID...')
+      
+      try {
+        // Parse the stored cookies to find PHPSESSID
+        const cookies = JSON.parse(session.cookies) as string[]
+        let phpSessionId = null
+        
+        for (const cookieStr of cookies) {
+          if (cookieStr.includes('PHPSESSID=')) {
+            // Extract PHPSESSID value from cookie string
+            const match = cookieStr.match(/PHPSESSID=([^;]+)/)
+            if (match) {
+              phpSessionId = match[1]
+              break
+            }
+          }
+        }
+        
+        if (phpSessionId) {
+          await monitor.log('info', `🍪 Found PHPSESSID in database: ${phpSessionId.substring(0, 8)}...`)
+          
+          // Set the PHPSESSID directly on our cookie jar
+          const manualCookie = `PHPSESSID=${phpSessionId}; Path=/; Domain=clubwyndhamsp.com`
+          await jar.setCookie(manualCookie, baseUrl)
+
+          // also add this cookies
+          const wordpressLoggedInCookie = 'wordpress_logged_in_abcdef123456789=test'
+          await jar.setCookie(wordpressLoggedInCookie, baseUrl)
+
+          client.defaults.jar = jar
+          
+          // Test if it works with a simple API call
+          const security = await getSecurity()
+          const sessionIsValid = await testSessionValidity(security)
+          
+          if (sessionIsValid) {
+            await monitor.log('success', '✅ Database session is working perfectly!')
+            
+            // Update last_used_at timestamp
+            await supabase
+              .from('auth_sessions')
+              .update({ last_used_at: new Date().toISOString() })
+              .eq('id', 'wyndham-auth')
+            
+            return true
+          } else {
+            await monitor.log('warning', '⚠️ Database session exists but not working, will re-authenticate')
+          }
+        } else {
+          await monitor.log('warning', '⚠️ Session found but no PHPSESSID in cookies')
+        }
+      } catch (parseError) {
+        await monitor.log('warning', '⚠️ Failed to parse stored cookies', parseError)
+      }
+    } else {
+      await monitor.log('info', '📝 No valid session found in database')
+    }
+
+    // If we get here, we need to do full authentication
+    await monitor.log('info', '🔐 Performing full authentication with 2FA...')
+    const fullAuthSuccess = await authSessionManager.ensureAuthenticated(client)
+    
+    if (fullAuthSuccess) {
+      await monitor.log('success', '✅ Full authentication successful')
+      return true
+    } else {
+      await monitor.log('error', '❌ Full authentication failed')
+      return false
+    }
+    
+  } catch (error) {
+    await monitor.log('error', '❌ Authentication error', error)
+    return false
+  }
 }
 
 // Get all location regions
 const getLocations = async (): Promise<Record<string, Location>> => {
-  logger.info('getLocations start')
+  await monitor.log('info', '🌍 Fetching location regions...')
   const url = 'https://clubwyndhamsp.com/book-now-new-with-calendar/'
+  const startTime = Date.now()
   
-  const response = await client.get(url)
-  const $ = cheerio.load(response.data)
-  const regionOptions = $('#iris_region option')
-  const locations: Record<string, Location> = {}
+  try {
+    const response = await client.get(url)
+    const $ = cheerio.load(response.data)
 
-  regionOptions.each((key, el) => {
-    const $el = $(el)
-    if ($el.text() !== '--Select Region--') {
-      const id = el.attribs.value
-      const text = $el.text()
-      const regex = /(.*)-\((.*)\) (.*)/
-      const matches = text.match(regex)
+    const selectElement = $('#iris_region')
+    await monitor.log('info', `Select element found: ${selectElement.length > 0}`)
+    
+    if (selectElement.length > 0) {
+      await monitor.log('info', `Select element HTML: ${selectElement.html()?.substring(0, 200)}...`)
+    } else {
+      // Try to find any select elements with "region" in their attributes
+      const regionSelects = $('select[name*="region"], select[id*="region"]')
+      await monitor.log('info', `Alternative region selects found: ${regionSelects.length}`)
       
-      logger.info(`Processing location: ${id} - ${text}`)
-
-      if (matches && matches.length > 3) {
-        const regionCode = matches[1]
-        const countryCode = matches[2]
-        const areaName = matches[3]
-        locations[id] = {
-          id,
-          regionCode,
-          countryCode,
-          areaName
-        }
-      } else {
-        logger.error(`Unable to parse location: ${text}`)
-      }
+      // Log some of the page content to see what we're working with  
+      const bodyContent = $('body').html()
+      const contentPreview = bodyContent?.substring(0, 1000) || 'No body content'
+      await monitor.log('info', `Page body content (first 1000 chars): ${contentPreview}`)
     }
-  })
+    
+    const regionOptions = $('#iris_region option')
+    const locations: Record<string, Location> = {}
 
-  logger.info('getLocations end')
-  logger.info(JSON.stringify(locations, null, 2))
-  return locations
+    const duration = Date.now() - startTime
+    await monitor.logApiCall(url, 'GET', response.status, duration, undefined, `Found ${regionOptions.length} regions`)
+
+    // If we didn't find options, try some alternative approaches
+    if (regionOptions.length === 0) {
+      await monitor.log('warning', 'No options found with standard selector, trying alternatives...')
+      
+      // Try different selectors
+      const alternatives = [
+        'select#iris_region option',
+        '[id="iris_region"] option',
+        'select[name="iris_region"] option',
+        'option[value]'  // Find all options with values, then filter
+      ]
+      
+      for (const selector of alternatives) {
+        const altOptions = $(selector)
+        await monitor.log('info', `Selector "${selector}" found ${altOptions.length} elements`)
+                 if (altOptions.length > 0) {
+           // Log the first few for debugging
+           altOptions.slice(0, 3).each((i, el) => {
+             const $el = $(el)
+             const value = 'attribs' in el ? el.attribs.value : ''
+             logger.info(`Option ${i}: value="${value}" text="${$el.text()}"`)
+           })
+         }
+      }
+      
+      // Check if there's a form containing region-related inputs
+      const forms = $('form')
+      await monitor.log('info', `Found ${forms.length} forms on the page`)
+      
+      // Look for any elements containing "region" in the HTML
+      const regionElements = $('*:contains("Select Region")')
+      await monitor.log('info', `Found ${regionElements.length} elements containing "Select Region"`)
+    }
+
+    regionOptions.each((key, el) => {
+      const $el = $(el)
+      if ($el.text() !== '--Select Region--') {
+        const id = el.attribs.value
+        const text = $el.text()
+        const regex = /(.*)-\((.*)\) (.*)/
+        const matches = text.match(regex)
+
+        if (matches && matches.length > 3) {
+          const regionCode = matches[1]
+          const countryCode = matches[2]
+          const areaName = matches[3]
+          locations[id] = {
+            id,
+            regionCode,
+            countryCode,
+            areaName
+          }
+          logger.info(`Parsed location: ${regionCode}-${countryCode} ${areaName}`)
+        } else {
+          logger.error(`Unable to parse location: ${text}`)
+          logger.warn(`Failed to parse location text: "${text}"`)
+        }
+      }
+    })
+
+    await monitor.log('success', `✅ Found ${Object.keys(locations).length} locations`)
+    return locations
+  } catch (error) {
+    const duration = Date.now() - startTime
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    await monitor.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
+    throw error
+  }
 }
 
 // Get resorts by location
 const getResortsByLocation = async (location: Location, security: string): Promise<ScraperResort[]> => {
-  logger.info('getResortsByLocation start')
-
   const payload: ApiPayload = {
     action: 'filter_resort_by_region',
     iris_region: location.id,
@@ -211,7 +549,6 @@ const getResortsByLocation = async (location: Location, security: string): Promi
   }
 
   const resorts = await callApi(payload) as ScraperResort[]
-  logger.info('getResortsByLocation end')
 
   return resorts.map((resort: ScraperResort) => ({
     ...resort,
@@ -225,7 +562,7 @@ const getResortsByLocation = async (location: Location, security: string): Promi
 
 // Get all resorts from all locations
 const getAllResorts = async (locations: Record<string, Location>, security: string): Promise<Record<string, ScraperResort>> => {
-  logger.info('getAllResorts start')
+  await monitor.log('info', '🏨 Fetching resorts from all locations...')
   const resorts: Record<string, ScraperResort> = {}
 
   const results = await Promise.allConcurrent(1)(Object.keys(locations).map(locationId => async () => {
@@ -240,7 +577,7 @@ const getAllResorts = async (locations: Record<string, Location>, security: stri
     }
   })
 
-  logger.info('getAllResorts end')
+  await monitor.log('success', `✅ Found ${Object.keys(resorts).length} unique resorts`)
   return resorts
 }
 
@@ -284,28 +621,40 @@ const getAvailabilityByRoom = async (
   if (response === "0") {
     logger.info('getAvailabilityByRoom-fallback start')
     const url = 'https://clubwyndhamsp.com/book-now-new-with-calendar/'
-    const pageResponse = await client.get(url)
-    const $ = cheerio.load(pageResponse.data)
+    const startTime = Date.now()
+    
+    try {
+      const pageResponse = await client.get(url)
+      const $ = cheerio.load(pageResponse.data)
 
-    $('.calendars script').each((key, el) => {
-      const scriptContent = $(el).html()
-      if (!scriptContent) return
+      const duration = Date.now() - startTime
+      await monitor.logApiCall(url, 'GET', pageResponse.status, duration, undefined, 'Fallback calendar page')
 
-      // Regular expressions to find the arrays
-      const monthArrayRegex = /var monthArray(\d+) = (\[.*?\]);/g
-      const monthPointArrayRegex = /var monthPointArray(\d+) = (\[.*?\]);/g
+      $('.calendars script').each((key, el) => {
+        const scriptContent = $(el).html()
+        if (!scriptContent) return
 
-      let match
-      while ((match = monthArrayRegex.exec(scriptContent)) !== null) {
-        const monthArray = JSON.parse(match[2]) as string[]
-        monthTotalArray = [...monthTotalArray, ...monthArray]
-      }
+        // Regular expressions to find the arrays
+        const monthArrayRegex = /var monthArray(\d+) = (\[.*?\]);/g
+        const monthPointArrayRegex = /var monthPointArray(\d+) = (\[.*?\]);/g
 
-      while ((match = monthPointArrayRegex.exec(scriptContent)) !== null) {
-        const monthPointArray = JSON.parse(match[2]) as string[]
-        monthTotalPointsArray = [...monthTotalPointsArray, ...monthPointArray]
-      }
-    })
+        let match
+        while ((match = monthArrayRegex.exec(scriptContent)) !== null) {
+          const monthArray = JSON.parse(match[2]) as string[]
+          monthTotalArray = [...monthTotalArray, ...monthArray]
+        }
+
+        while ((match = monthPointArrayRegex.exec(scriptContent)) !== null) {
+          const monthPointArray = JSON.parse(match[2]) as string[]
+          monthTotalPointsArray = [...monthTotalPointsArray, ...monthPointArray]
+        }
+      })
+    } catch (error) {
+      const duration = Date.now() - startTime
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      await monitor.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
+      throw error
+    }
 
     logger.info('getAvailabilityByRoom-fallback end')
   }
@@ -412,44 +761,55 @@ interface SyncResult {
 // Main scraping functions
 export const syncResorts = async (): Promise<SyncResult> => {
   try {
-    logger.info('🏨 Starting resort sync...')
+    await monitor.setStep('Syncing Resorts')
+    await monitor.log('info', '🏨 Starting resort sync...')
     
+    const authenticated = await ensureAuthenticated()
+    if (!authenticated) {
+      throw new Error('Authentication failed')
+    }
     const security = await getSecurity()
-    await login(security)
     const locations = await getLocations()
     const resorts = await getAllResorts(locations, security)
 
     let successCount = 0
+    const totalResorts = Object.keys(resorts).length
+    
     for (const resort of Object.values(resorts)) {
       const success = await dbResorts.store(resort)
       if (success) successCount++
+      await monitor.updateProgress('resorts', successCount, totalResorts)
     }
 
-    logger.info(`✅ Resort sync completed: ${successCount}/${Object.keys(resorts).length} resorts stored`)
+    await monitor.log('success', `✅ Resort sync completed: ${successCount}/${totalResorts} resorts stored`)
     
     return {
       success: true,
       message: 'Resort sync completed successfully',
       data: {
-        totalResorts: Object.keys(resorts).length,
+        totalResorts,
         storedResorts: successCount
       }
     }
   } catch (error) {
-    logger.error('❌ Resort sync failed:', error)
+    await monitor.log('error', '❌ Resort sync failed', error)
     throw error
   }
 }
 
 export const syncRooms = async (): Promise<SyncResult> => {
   try {
-    logger.info('🏠 Starting rooms/availability sync...')
+    await monitor.setStep('Syncing Rooms & Availability')
+    await monitor.log('info', '🏠 Starting rooms/availability sync...')
     
+    const authenticated = await ensureAuthenticated()
+    if (!authenticated) {
+      throw new Error('Authentication failed')
+    }
     const security = await getSecurity()
-    await login(security)
 
     const resorts = await dbResorts.fetchByCountryCode(["AUS"])
-    logger.info(`Fetching availability for ${resorts.length} resorts`)
+    await monitor.log('info', `Fetching availability for ${resorts.length} resorts`)
     
     let processedResorts = 0
     let totalRooms = 0
@@ -457,11 +817,12 @@ export const syncRooms = async (): Promise<SyncResult> => {
 
     await Promise.allConcurrent(1)(resorts.map(resort => async () => {
       processedResorts++
-      logger.info(`Getting resort #${processedResorts}: ${resort.name || resort.id}`)
+      await monitor.log('info', `Getting resort #${processedResorts}: ${resort.name || resort.id}`)
+      await monitor.updateProgress('rooms', processedResorts, resorts.length)
       
       const results = await getAvailability(resort as unknown as ScraperResort, security)
       if (!results) {
-        logger.info('No valid availabilities found')
+        await monitor.log('info', 'No valid availabilities found')
         return
       }
 
@@ -479,10 +840,11 @@ export const syncRooms = async (): Promise<SyncResult> => {
         }
       }
 
+      await monitor.updateProgress('availability', totalAvailabilities, totalAvailabilities)
       await delay(5000) // 5 second delay between resorts
     }))
 
-    logger.info(`✅ Rooms/availability sync completed: ${processedResorts} resorts, ${totalRooms} rooms, ${totalAvailabilities} availability records`)
+    await monitor.log('success', `✅ Rooms/availability sync completed: ${processedResorts} resorts, ${totalRooms} rooms, ${totalAvailabilities} availability records`)
     
     return {
       success: true,
@@ -494,21 +856,53 @@ export const syncRooms = async (): Promise<SyncResult> => {
       }
     }
   } catch (error) {
-    logger.error('❌ Rooms/availability sync failed:', error)
+    await monitor.log('error', '❌ Rooms/availability sync failed', error)
     throw error
   }
 }
 
-// Combined scraping function for the cron job
+// Combined scraping function with intelligent scheduling
 export const scrapeWyndhamInventory = async () => {
-  logger.info('🚀 Starting Wyndham inventory scraping...')
+  await monitor.setRunning(true)
+  await monitor.log('info', '🚀 Starting intelligent Wyndham inventory scraping...')
   
   try {
-    // First sync resorts (if needed)
-    const resortResult = await syncResorts()
+    // Create scraping plan
+    const plan = await intelligentScheduler.createScrapingPlan()
+    await monitor.log('info', `📋 Scraping plan: ${plan.reason}`)
     
-    // Then sync rooms and availability
-    const roomResult = await syncRooms()
+         let resortResult: SyncResult = { success: true, message: 'Skipped', data: { storedResorts: 0, totalResorts: 0 } }
+     let roomResult: SyncResult = { success: true, message: 'Skipped', data: { totalRooms: 0, totalAvailabilities: 0, processedResorts: 0 } }
+    
+    // Only scrape what's needed based on frequency
+    if (plan.needsResorts) {
+      await monitor.log('info', '🏨 Scraping resorts (due for update)...')
+      resortResult = await syncResorts()
+      await intelligentScheduler.updateLastScrapedTime('resorts')
+    } else {
+      await monitor.log('info', '⏭️ Skipping resorts (not due for update)')
+    }
+    
+    if (plan.needsRooms) {
+      await monitor.log('info', '🏠 Scraping rooms (due for update)...')
+      roomResult = await syncRooms()
+      await intelligentScheduler.updateLastScrapedTime('rooms')
+    } else {
+      await monitor.log('info', '⏭️ Skipping rooms (not due for update)')
+    }
+    
+    if (plan.needsAvailabilities) {
+      await monitor.log('info', '📅 Scraping availabilities (due for update)...')
+      // Note: availability scraping is handled within syncRooms for now
+      // In future, this could be separated for more granular control
+      if (!plan.needsRooms) {
+        // If rooms weren't scraped, we need a separate availability scraping function
+        await monitor.log('info', '📅 Availability-only scraping not yet implemented')
+      }
+      await intelligentScheduler.updateLastScrapedTime('availabilities')
+    } else {
+      await monitor.log('info', '⏭️ Skipping availabilities (not due for update)')
+    }
     
     const result = {
       scraped_at: new Date().toISOString(),
@@ -516,32 +910,21 @@ export const scrapeWyndhamInventory = async () => {
       total_rooms_found: roomResult.data?.totalRooms || 0,
       available_rooms: roomResult.data?.totalAvailabilities || 0,
       new_availability: roomResult.data?.totalAvailabilities || 0,
-      processed_resorts: roomResult.data?.processedResorts || 0
+      processed_resorts: roomResult.data?.processedResorts || 0,
+      plan: plan,
+      next_scraping: await intelligentScheduler.getNextScrapingTimes()
     }
     
-    logger.info('✅ Wyndham inventory scraping completed:', result)
+    await monitor.setStep('Completed')
+    await monitor.log('success', '✅ Intelligent scraping completed successfully', result)
+    await monitor.setRunning(false)
+    
     return result
     
   } catch (error) {
-    logger.error('❌ Wyndham inventory scraping failed:', error)
+    await monitor.setStep('Failed')
+    await monitor.log('error', '❌ Intelligent scraping failed', error)
+    await monitor.setRunning(false)
     throw error
   }
 }
-
-// Example structure for when you adapt your existing script:
-/*
-export async function scrapeResortAvailability(resortId: string) {
-  // Your existing API calls here
-  const response = await fetch(`${process.env.WYNDHAM_API_BASE_URL}/resorts/${resortId}/availability`, {
-    headers: {
-      'Authorization': `Bearer ${process.env.WYNDHAM_AUTH_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  })
-  
-  const data = await response.json()
-  
-  // Process and save to database
-  return data
-}
-*/ 

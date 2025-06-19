@@ -28,12 +28,13 @@ export const store = async (availability: Availability): Promise<boolean> => {
   }
 }
 
-export const fetch = async (id: number): Promise<Availability | null> => {
+export const fetch = async (roomId: number, date: string): Promise<Availability | null> => {
   try {
     const { data, error } = await supabase
       .from('availabilities')
       .select('*')
-      .eq('id', id)
+      .eq('room_id', roomId)
+      .eq('date', date)
       .single()
 
     if (error) {
