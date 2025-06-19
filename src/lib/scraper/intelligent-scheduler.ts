@@ -38,7 +38,7 @@ class IntelligentScheduler {
     const now = new Date()
     
     try {
-      // Check last scraping times for each data type
+      // Check if scraping is needed for each data type
       const [resortsCheck, roomsCheck, availabilitiesCheck] = await Promise.all([
         this.getLastScrapedTime('resorts'),
         this.getLastScrapedTime('rooms'), 
@@ -97,27 +97,57 @@ class IntelligentScheduler {
     return timeSinceLastScrape >= frequencyMs
   }
 
-  // Get the most recent scraping time for a data type
+  // Check if any records need scraping based on frequency threshold
   private async getLastScrapedTime(tableName: string): Promise<Date | null> {
     try {
-      const { data, error } = await supabase
+      const now = new Date()
+      const frequency = this.frequencies[tableName as keyof ScrapingFrequencies]
+      const thresholdTime = new Date(now.getTime() - frequency)
+      
+      // Check if there are any records older than the frequency threshold
+      // or records that have never been scraped
+      const { error } = await supabase
         .from(tableName)
         .select('last_scraped_at')
-        .not('last_scraped_at', 'is', null)
-        .order('last_scraped_at', { ascending: false })
+        .or(`last_scraped_at.is.null,last_scraped_at.lt.${thresholdTime.toISOString()}`)
         .limit(1)
         .single()
 
       if (error) {
         if (error.code === 'PGRST116') {
-          // No results found
+          // No outdated records found - check if any records exist at all
+          const { data: anyData, error: anyError } = await supabase
+            .from(tableName)
+            .select('last_scraped_at')
+            .limit(1)
+            .single()
+          
+          if (anyError && anyError.code === 'PGRST116') {
+            // No records exist at all - needs scraping
+            return null
+          } else if (anyData) {
+            // Records exist and none are outdated - return the most recent
+            const { data: recentData, error: recentError } = await supabase
+              .from(tableName)
+              .select('last_scraped_at')
+              .not('last_scraped_at', 'is', null)
+              .order('last_scraped_at', { ascending: false })
+              .limit(1)
+              .single()
+            
+            if (recentError) {
+              return null
+            }
+            return recentData?.last_scraped_at ? new Date(recentData.last_scraped_at) : null
+          }
           return null
         }
         logger.error(`Error getting last scraped time for ${tableName}:`, error)
         return null
       }
 
-      return data?.last_scraped_at ? new Date(data.last_scraped_at) : null
+      // Found outdated records - return null to indicate scraping is needed
+      return null
     } catch (error) {
       logger.error(`Error checking last scraped time for ${tableName}:`, error)
       return null

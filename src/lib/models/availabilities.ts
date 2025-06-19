@@ -12,15 +12,22 @@ export const store = async (availability: Availability): Promise<boolean> => {
   try {
     const transformedAvailability = convertObjectKeysToSnakeCase(availability)
 
+    // DEBUG: Log what we're about to store
+    console.log('🔍 DEBUG: About to store availability record:')
+    console.log('Original data:', JSON.stringify(availability, null, 2))
+    console.log('Transformed data:', JSON.stringify(transformedAvailability, null, 2))
+
     const { error } = await supabase
       .from('availabilities')
       .upsert(transformedAvailability)
 
     if (error) {
       console.error('Error inserting availability:', error)
+      console.error('Error details:', JSON.stringify(error, null, 2))
       return false
     }
 
+    console.log('🔍 DEBUG: Successfully stored availability record')
     return true
   } catch (error) {
     console.error('Unexpected error:', error)

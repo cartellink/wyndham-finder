@@ -7,25 +7,7 @@ import type { AxiosInstance } from 'axios'
 import type { CookieJar } from 'tough-cookie'
 
 // Monitoring interface (copied from wyndham-scraper to avoid circular dependency)
-interface MonitoringUpdate {
-  isRunning?: boolean
-  currentStep?: string
-  log?: {
-    level: 'info' | 'error' | 'success' | 'warning'
-    message: string
-    details?: unknown
-  }
-  apiCall?: {
-    timestamp: string
-    url: string
-    method: string
-    status: number
-    duration: number
-    payload?: unknown
-    response?: unknown
-    error?: boolean
-  }
-}
+
 
 export interface AuthSession {
   id: string
@@ -47,48 +29,12 @@ class AuthSessionManager {
   private static instance: AuthSessionManager
   private currentSession: AuthSession | null = null
   private cookieJar: CookieJar | null = null // Will store the axios cookie jar
-  private baseUrl = process.env.NODE_ENV === 'development' 
-    ? 'http://localhost:3000' 
-    : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : ''
 
   private constructor() {}
-
-  // Monitoring helper
-  private async updateStatus(update: MonitoringUpdate) {
-    try {
-      if (!this.baseUrl) return
-      
-      await fetch(`${this.baseUrl}/api/admin/scraping-status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(update)
-      })
-    } catch {
-      // Silently fail - don't interrupt auth for monitoring issues
-    }
-  }
-
-  private async logApiCall(url: string, method: string, status: number, duration: number, payload?: unknown, response?: unknown) {
-    await this.updateStatus({
-      apiCall: {
-        timestamp: new Date().toISOString(),
-        url,
-        method,
-        status,
-        duration,
-        payload,
-        response,
-        error: status === 0 || status >= 400 ? true : undefined
-      }
-    })
-  }
 
   private async log(level: 'info' | 'error' | 'success' | 'warning', message: string, details?: unknown) {
     const loggerMethod = level === 'success' ? 'info' : level === 'warning' ? 'warn' : level
     logger[loggerMethod](message, details)
-    await this.updateStatus({
-      log: { level, message, details }
-    })
   }
 
   static getInstance(): AuthSessionManager {
@@ -225,7 +171,7 @@ class AuthSessionManager {
     try {
       const response = await axiosClient.get(url)
       const duration = Date.now() - startTime
-      await this.logApiCall(url, 'GET', response.status, duration, undefined, 'Security nonce retrieved')
+      logger.info(`Security nonce API call: ${response.status} (${duration}ms)`)
       
       const cheerio = await import('cheerio')
       const $ = cheerio.load(response.data)
@@ -248,7 +194,7 @@ class AuthSessionManager {
     } catch (error) {
       const duration = Date.now() - startTime
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-      await this.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
+      logger.error(`Security nonce API call failed: ${errorMessage} (${duration}ms)`)
       throw error
     }
   }
@@ -265,7 +211,8 @@ class AuthSessionManager {
       security
     })
 
-    const payload = {
+    // Create payload for logging (with redacted password)
+    const logPayload = {
       action: 'whpp_login',
       memberid: process.env.WYNDHAM_MEMBER_ID || '',
       password: '***REDACTED***',
@@ -280,13 +227,13 @@ class AuthSessionManager {
       })
 
       const duration = Date.now() - startTime
-      await this.logApiCall(url, 'POST', response.status, duration, payload, response.data)
+      logger.info(`Login API call: ${response.status} (${duration}ms)`, logPayload)
 
       return response.data as LoginResponse
     } catch (error) {
       const duration = Date.now() - startTime
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-      await this.logApiCall(url, 'POST', 0, duration, payload, errorMessage)
+      logger.error(`Login API call failed: ${errorMessage} (${duration}ms)`, logPayload)
       throw error
     }
   }
@@ -376,7 +323,7 @@ class AuthSessionManager {
         })
         
         const finalDuration = Date.now() - finalStartTime
-        await this.logApiCall(finalUrl, 'POST', finalResponse.status, finalDuration, finalPayload, finalResponse.data)
+        logger.info(`2FA validation API call: ${finalResponse.status} (${finalDuration}ms)`)
         
         const finalResult = finalResponse.data
       
@@ -391,7 +338,7 @@ class AuthSessionManager {
       } catch (error) {
         const finalDuration = Date.now() - finalStartTime
         const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-        await this.logApiCall(finalUrl, 'POST', 0, finalDuration, finalPayload, errorMessage)
+        logger.error(`2FA validation API call failed: ${errorMessage} (${finalDuration}ms)`)
         await this.log('error', '❌ 2FA verification API call failed', error)
         return false
       }

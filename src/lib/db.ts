@@ -1,5 +1,13 @@
 import { supabaseAdmin } from './supabase'
 
+// Helper function to convert camelCase to snake_case
+const camelToSnakeCase = (str: string): string => {
+  return str
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2') // detect substrings that are uppercase, but are followed by a camelCase substring. e.g. URLCode -> URL_Code
+    .replace(/([a-z\d])([A-Z])/g, '$1_$2') // standard camelCase conversion
+    .toLowerCase()
+}
+
 // Convert camelCase to snake_case for database columns
 export const convertObjectKeysToSnakeCase = (obj: unknown): unknown => {
   if (obj === null || typeof obj !== 'object') {
@@ -12,7 +20,7 @@ export const convertObjectKeysToSnakeCase = (obj: unknown): unknown => {
 
   const converted: Record<string, unknown> = {}
   Object.keys(obj as Record<string, unknown>).forEach(key => {
-    const snakeKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)
+    const snakeKey = camelToSnakeCase(key)
     converted[snakeKey] = convertObjectKeysToSnakeCase((obj as Record<string, unknown>)[key])
   })
 

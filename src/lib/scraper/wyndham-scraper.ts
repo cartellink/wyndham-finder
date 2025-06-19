@@ -32,24 +32,20 @@ interface ScraperResort {
 
 interface Room {
   id: number
+  resort_id?: number
   [key: string]: unknown
-}
-
-interface AvailabilityRoom {
-  AvailArray: string[]
-  PointArray: string[]
 }
 
 interface Availability {
   FromDate: string
   ToDate: string
-  Room: AvailabilityRoom[]
+  Room: Array<{
+    AvailArray: string[]
+    PointArray: string[]
+  }>
 }
 
-interface RoomAvailabilityData {
-  room: Room
-  availability: Availability
-}
+
 
 interface AvailabilityRecord {
   roomId: number
@@ -59,40 +55,10 @@ interface AvailabilityRecord {
   [key: string]: unknown // Add index signature to match the model's Availability interface
 }
 
-interface ApiPayload {
-  [key: string]: string | number | null | undefined
-}
+
 
 // Monitoring interface
-interface MonitoringUpdate {
-  isRunning?: boolean
-  currentStep?: string
-  progress?: {
-    resorts?: { processed: number; total: number }
-    rooms?: { processed: number; total: number }
-    availability?: { processed: number; total: number }
-  }
-  log?: {
-    level: 'info' | 'error' | 'success' | 'warning'
-    message: string
-    details?: unknown
-  }
-  apiCall?: {
-    timestamp: string
-    url: string
-    method: string
-    status: number
-    duration: number
-    payload?: unknown
-    response?: unknown
-    error?: boolean
-  }
-  stats?: {
-    totalRequests?: number
-    successfulRequests?: number
-    errors?: number
-  }
-}
+
 
 import * as cheerio from 'cheerio'
 import axios, { AxiosInstance } from 'axios'
@@ -117,112 +83,52 @@ const baseUrl = 'http://clubwyndhamsp.com'
 
 
 // Monitoring helper
-class ScrapingMonitor {
-  private baseUrl = process.env.NODE_ENV === 'development' 
-    ? 'http://localhost:3000' 
-    : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : ''
-    
-  private stats = {
-    totalRequests: 0,
-    successfulRequests: 0,
-    errors: 0
-  }
-
-  async updateStatus(update: MonitoringUpdate) {
-    try {
-      if (!this.baseUrl) return
-      
-      await fetch(`${this.baseUrl}/api/admin/scraping-status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(update)
-      })
-    } catch {
-      // Silently fail - don't interrupt scraping for monitoring issues
-    }
-  }
-
-  async logApiCall(url: string, method: string, status: number, duration: number, payload?: unknown, response?: unknown, fullResponseData?: unknown) {
-    this.stats.totalRequests++
-    if (status >= 200 && status < 400) {
-      this.stats.successfulRequests++
-    } else {
-      this.stats.errors++
-    }
-
-    // For errors or important responses, capture full details
-    let responseForLogging = response
-    if (status === 0 || status >= 400 || (fullResponseData && typeof fullResponseData === 'object')) {
-      // Keep full response data for errors or structured responses
-      responseForLogging = fullResponseData || response
-    } else if (typeof response === 'string' && response.length > 200) {
-      // Only truncate long string responses for successful calls
-      responseForLogging = response.substring(0, 200) + '...'
-    }
-
-    await this.updateStatus({
-      apiCall: {
-        timestamp: new Date().toISOString(),
-        url,
-        method,
-        status,
-        duration,
-        payload,
-        response: responseForLogging,
-        error: status === 0 || status >= 400 ? true : undefined
-      },
-      stats: this.stats
-    })
-  }
-
-  async log(level: 'info' | 'error' | 'success' | 'warning', message: string, details?: unknown) {
+// Simple logging helper to replace monitor
+const loggerHelper = {
+  log: (level: 'info' | 'error' | 'success' | 'warning', message: string, details?: unknown) => {
     const loggerMethod = level === 'success' ? 'info' : level === 'warning' ? 'warn' : level
     logger[loggerMethod](message, details)
-    await this.updateStatus({
-      log: { level, message, details }
-    })
-  }
-
-  async setStep(step: string) {
-    await this.updateStatus({ currentStep: step })
-  }
-
-  async setRunning(isRunning: boolean) {
-    await this.updateStatus({ isRunning })
-  }
-
-  async updateProgress(type: 'resorts' | 'rooms' | 'availability', processed: number, total: number) {
-    await this.updateStatus({
-      progress: {
-        [type]: { processed, total }
-      }
-    })
+  },
+  
+  logApiCall: (url: string, method: string, status: number, duration: number, payload?: unknown, response?: unknown) => {
+    // Parameters payload and response are available for future debugging but not currently used
+    void payload
+    void response
+    if (status >= 200 && status < 400) {
+      logger.info(`API call: ${method} ${url} - ${status} (${duration}ms)`)
+    } else {
+      logger.error(`API call failed: ${method} ${url} - ${status} (${duration}ms)`)
+    }
+  },
+  
+  setStep: (step: string) => {
+    logger.info(`Step: ${step}`)
+  },
+  
+  setRunning: (isRunning: boolean) => {
+    logger.info(`Scraping ${isRunning ? 'started' : 'stopped'}`)
+  },
+  
+  updateProgress: (type: 'resorts' | 'rooms' | 'availability', processed: number, total: number) => {
+    logger.info(`Progress - ${type}: ${processed}/${total}`)
   }
 }
 
-// Global monitor instance
-const monitor = new ScrapingMonitor()
 
-// Helper function to extract JavaScript variables from HTML
-const findTextAndReturnRemainder = (target: string, variable: string): string => {
-  const chopFront = target.substring(target.search(variable) + variable.length, target.length)
-  const result = chopFront.substring(0, chopFront.search(';'))
-  return result
-}
 
 // Make API calls to Club Wyndham with monitoring and session recovery
-const callApi = async (payload: ApiPayload, retryCount: number = 0): Promise<unknown> => {
+const callApi = async (payload: Record<string, unknown>, retryCount: number = 0): Promise<unknown> => {
   const url = 'https://clubwyndhamsp.com/wp-admin/admin-ajax.php'
   const startTime = Date.now()
   
   try {
-    logger.info('callApi start')
+    loggerHelper.log('info', 'callApi start')
     
     // Extract sensitive data for logging purposes, but don't log them
     const { memberid, password, ...rest } = payload
     void memberid // Suppress unused variable warning
     void password // Suppress unused variable warning
-    logger.info(JSON.stringify(rest, null, 2))
+          loggerHelper.log('info', JSON.stringify(rest, null, 2))
     
     // Use form data directly like the request-promise example
     const response = await client.post(url, payload, {
@@ -239,26 +145,26 @@ const callApi = async (payload: ApiPayload, retryCount: number = 0): Promise<unk
       
       // Possible session expiration - try to re-authenticate once
       if (retryCount === 0) {
-        await monitor.log('warning', '⚠️ API call returned session-expired response, attempting re-authentication...')
+        loggerHelper.log('warning', '⚠️ API call returned session-expired response, attempting re-authentication...')
         
         const reAuthSuccess = await ensureAuthenticated()
         if (reAuthSuccess) {
-          await monitor.log('info', '🔄 Re-authentication successful, retrying API call...')
+          loggerHelper.log('info', '🔄 Re-authentication successful, retrying API call...')
           return await callApi(payload, retryCount + 1) // Retry with re-auth
         } else {
-          await monitor.log('error', '❌ Re-authentication failed')
+          loggerHelper.log('error', '❌ Re-authentication failed')
           throw new Error('Session expired and re-authentication failed')
         }
       } else {
-        await monitor.log('error', '❌ API call failed even after re-authentication')
+        loggerHelper.log('error', '❌ API call failed even after re-authentication')
         throw new Error('API call failed after re-authentication attempt')
       }
     }
     
     // Log full response data for better debugging
-    await monitor.logApiCall(url, 'POST', response.status, duration, rest, 'Success', response.data)
+    loggerHelper.logApiCall(url, 'POST', response.status, duration, rest, 'Success')
 
-    logger.info('callApi end')
+    loggerHelper.log('info', 'callApi end')
     return response.data
     
   } catch (error) {
@@ -270,49 +176,24 @@ const callApi = async (payload: ApiPayload, retryCount: number = 0): Promise<unk
     void memberid // Suppress unused variable warning
     void password // Suppress unused variable warning
     
-    const errorDetails = {
-      error: errorMessage,
-      stack: error instanceof Error ? error.stack : undefined,
-      axiosError: error && typeof error === 'object' && 'response' in error ? {
-        status: (error as unknown as { response?: { status?: number } }).response?.status,
-        statusText: (error as unknown as { response?: { statusText?: string } }).response?.statusText,
-        data: (error as unknown as { response?: { data?: unknown } }).response?.data,
-        headers: (error as unknown as { response?: { headers?: unknown } }).response?.headers
-      } : undefined
-    }
+    // Error details for debugging (commented out to avoid unused variable warning)
+    // const errorDetails = {
+    //   error: errorMessage,
+    //   stack: error instanceof Error ? error.stack : undefined,
+    //   axiosError: error && typeof error === 'object' && 'response' in error ? {
+    //     status: (error as unknown as { response?: { status?: number } }).response?.status,
+    //     statusText: (error as unknown as { response?: { statusText?: string } }).response?.statusText,
+    //     data: (error as unknown as { response?: { data?: unknown } }).response?.data,
+    //     headers: (error as unknown as { response?: { headers?: unknown } }).response?.headers
+    //   } : undefined
+    // }
     
-    await monitor.logApiCall(url, 'POST', 0, duration, restForError, errorMessage, errorDetails)
+    loggerHelper.logApiCall(url, 'POST', 0, duration, restForError, errorMessage)
     throw error
   }
 }
 
-// Test if current session is valid by making a simple API call
-const testSessionValidity = async (security: string): Promise<boolean> => {
-  try {
-    await monitor.log('info', '🧪 Testing session validity...')
-    
-    // Make a simple API call that requires authentication
-    const payload: ApiPayload = {
-      action: 'filter_resort_by_region',
-      iris_region: '690', // Use a known region ID for testing
-      security
-    }
 
-    const response = await callApi(payload)
-    
-    // If we get a valid response (not "0" or "-1"), session is good
-    if (response && response !== "0" && response !== "-1" && Array.isArray(response)) {
-      await monitor.log('success', `✅ Session is valid - got ${(response as unknown[]).length} resorts`)
-      return true
-    } else {
-      await monitor.log('warning', `⚠️ Session may be invalid - response: ${JSON.stringify(response).substring(0, 100)}`)
-      return false
-    }
-  } catch (error) {
-    await monitor.log('warning', '⚠️ Session validity test failed, may need re-authentication', error)
-    return false
-  }
-}
 
 // Get security nonce from the main page
 const getSecurity = async (): Promise<string> => {
@@ -327,29 +208,33 @@ const getSecurity = async (): Promise<string> => {
       throw new Error('Could not find security nonce')
     }
     
-    const findAndClean = findTextAndReturnRemainder(text, 'var ajax_object =')
-    const ajaxObject = JSON.parse(findAndClean) as { ajax_nonce: string }
+    // Extract security nonce from JavaScript
+    const ajaxObjectStart = text.indexOf('var ajax_object =') + 'var ajax_object ='.length
+    const ajaxObjectEnd = text.indexOf(';', ajaxObjectStart)
+    const ajaxObjectStr = text.substring(ajaxObjectStart, ajaxObjectEnd)
+    const ajaxObject = JSON.parse(ajaxObjectStr) as { ajax_nonce: string }
     
     const duration = Date.now() - startTime
-    await monitor.logApiCall(baseUrl, 'GET', response.status, duration, undefined, 'Security nonce extracted', { nonce: ajaxObject.ajax_nonce })
+    loggerHelper.logApiCall(baseUrl, 'GET', response.status, duration, undefined, 'Security nonce extracted')
     
     return ajaxObject.ajax_nonce
   } catch (error) {
     const duration = Date.now() - startTime
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-    const errorDetails = {
-      error: errorMessage,
-      stack: error instanceof Error ? error.stack : undefined,
-      possibleCause: 'Failed to extract security nonce from page'
-    }
-    await monitor.logApiCall(baseUrl, 'GET', 0, duration, undefined, errorMessage, errorDetails)
+    // Error details for debugging (commented out to avoid unused variable warning)
+    // const errorDetails = {
+    //   error: errorMessage,
+    //   stack: error instanceof Error ? error.stack : undefined,
+    //   possibleCause: 'Failed to extract security nonce from page'
+    // }
+    loggerHelper.logApiCall(baseUrl, 'GET', 0, duration, undefined, errorMessage)
     throw error
   }
 }
 
 // Simple authentication that just loads PHPSESSID from database
 const ensureAuthenticated = async (): Promise<boolean> => {
-  await monitor.log('info', '🔐 Loading authentication session...')
+  loggerHelper.log('info', '🔐 Loading authentication session...')
   
   try {
     // Try to load existing session from database
@@ -362,7 +247,7 @@ const ensureAuthenticated = async (): Promise<boolean> => {
       .single()
 
     if (session && !error) {
-      await monitor.log('info', '🍪 Found valid session in database, extracting PHPSESSID...')
+      loggerHelper.log('info', '🍪 Found valid session in database, extracting PHPSESSID...')
       
       try {
         // Parse the stored cookies to find PHPSESSID
@@ -381,7 +266,7 @@ const ensureAuthenticated = async (): Promise<boolean> => {
         }
         
         if (phpSessionId) {
-          await monitor.log('info', `🍪 Found PHPSESSID in database: ${phpSessionId.substring(0, 8)}...`)
+          loggerHelper.log('info', `🍪 Found PHPSESSID in database: ${phpSessionId.substring(0, 8)}...`)
           
           // Set the PHPSESSID directly on our cookie jar
           const manualCookie = `PHPSESSID=${phpSessionId}; Path=/; Domain=clubwyndhamsp.com`
@@ -395,10 +280,15 @@ const ensureAuthenticated = async (): Promise<boolean> => {
           
           // Test if it works with a simple API call
           const security = await getSecurity()
-          const sessionIsValid = await testSessionValidity(security)
+          const testPayload = {
+            action: 'filter_resort_by_region',
+            iris_region: '690',
+            security
+          }
+          const testResponse = await callApi(testPayload)
           
-          if (sessionIsValid) {
-            await monitor.log('success', '✅ Database session is working perfectly!')
+          if (testResponse && testResponse !== "0" && testResponse !== "-1" && Array.isArray(testResponse)) {
+            loggerHelper.log('success', '✅ Database session is working perfectly!')
             
             // Update last_used_at timestamp
             await supabase
@@ -408,39 +298,39 @@ const ensureAuthenticated = async (): Promise<boolean> => {
             
             return true
           } else {
-            await monitor.log('warning', '⚠️ Database session exists but not working, will re-authenticate')
+            loggerHelper.log('warning', '⚠️ Database session exists but not working, will re-authenticate')
           }
         } else {
-          await monitor.log('warning', '⚠️ Session found but no PHPSESSID in cookies')
+          loggerHelper.log('warning', '⚠️ Session found but no PHPSESSID in cookies')
         }
       } catch (parseError) {
-        await monitor.log('warning', '⚠️ Failed to parse stored cookies', parseError)
+        loggerHelper.log('warning', '⚠️ Failed to parse stored cookies', parseError)
       }
     } else {
-      await monitor.log('info', '📝 No valid session found in database')
+      loggerHelper.log('info', '📝 No valid session found in database')
     }
 
     // If we get here, we need to do full authentication
-    await monitor.log('info', '🔐 Performing full authentication with 2FA...')
+    loggerHelper.log('info', '🔐 Performing full authentication with 2FA...')
     const fullAuthSuccess = await authSessionManager.ensureAuthenticated(client)
     
     if (fullAuthSuccess) {
-      await monitor.log('success', '✅ Full authentication successful')
+      loggerHelper.log('success', '✅ Full authentication successful')
       return true
     } else {
-      await monitor.log('error', '❌ Full authentication failed')
+      loggerHelper.log('error', '❌ Full authentication failed')
       return false
     }
     
   } catch (error) {
-    await monitor.log('error', '❌ Authentication error', error)
+    loggerHelper.log('error', '❌ Authentication error', error)
     return false
   }
 }
 
 // Get all location regions
 const getLocations = async (): Promise<Record<string, Location>> => {
-  await monitor.log('info', '🌍 Fetching location regions...')
+  loggerHelper.log('info', '🌍 Fetching location regions...')
   const url = 'https://clubwyndhamsp.com/book-now-new-with-calendar/'
   const startTime = Date.now()
   
@@ -448,61 +338,8 @@ const getLocations = async (): Promise<Record<string, Location>> => {
     const response = await client.get(url)
     const $ = cheerio.load(response.data)
 
-    const selectElement = $('#iris_region')
-    await monitor.log('info', `Select element found: ${selectElement.length > 0}`)
-    
-    if (selectElement.length > 0) {
-      await monitor.log('info', `Select element HTML: ${selectElement.html()?.substring(0, 200)}...`)
-    } else {
-      // Try to find any select elements with "region" in their attributes
-      const regionSelects = $('select[name*="region"], select[id*="region"]')
-      await monitor.log('info', `Alternative region selects found: ${regionSelects.length}`)
-      
-      // Log some of the page content to see what we're working with  
-      const bodyContent = $('body').html()
-      const contentPreview = bodyContent?.substring(0, 1000) || 'No body content'
-      await monitor.log('info', `Page body content (first 1000 chars): ${contentPreview}`)
-    }
-    
     const regionOptions = $('#iris_region option')
     const locations: Record<string, Location> = {}
-
-    const duration = Date.now() - startTime
-    await monitor.logApiCall(url, 'GET', response.status, duration, undefined, `Found ${regionOptions.length} regions`)
-
-    // If we didn't find options, try some alternative approaches
-    if (regionOptions.length === 0) {
-      await monitor.log('warning', 'No options found with standard selector, trying alternatives...')
-      
-      // Try different selectors
-      const alternatives = [
-        'select#iris_region option',
-        '[id="iris_region"] option',
-        'select[name="iris_region"] option',
-        'option[value]'  // Find all options with values, then filter
-      ]
-      
-      for (const selector of alternatives) {
-        const altOptions = $(selector)
-        await monitor.log('info', `Selector "${selector}" found ${altOptions.length} elements`)
-                 if (altOptions.length > 0) {
-           // Log the first few for debugging
-           altOptions.slice(0, 3).each((i, el) => {
-             const $el = $(el)
-             const value = 'attribs' in el ? el.attribs.value : ''
-             logger.info(`Option ${i}: value="${value}" text="${$el.text()}"`)
-           })
-         }
-      }
-      
-      // Check if there's a form containing region-related inputs
-      const forms = $('form')
-      await monitor.log('info', `Found ${forms.length} forms on the page`)
-      
-      // Look for any elements containing "region" in the HTML
-      const regionElements = $('*:contains("Select Region")')
-      await monitor.log('info', `Found ${regionElements.length} elements containing "Select Region"`)
-    }
 
     regionOptions.each((key, el) => {
       const $el = $(el)
@@ -522,68 +359,83 @@ const getLocations = async (): Promise<Record<string, Location>> => {
             countryCode,
             areaName
           }
-          logger.info(`Parsed location: ${regionCode}-${countryCode} ${areaName}`)
+          loggerHelper.log('info', `Parsed location: ${regionCode}-${countryCode} ${areaName}`)
         } else {
-          logger.error(`Unable to parse location: ${text}`)
-          logger.warn(`Failed to parse location text: "${text}"`)
+                      loggerHelper.log('error', `Unable to parse location: ${text}`)
+            loggerHelper.log('warning', `Failed to parse location text: "${text}"`)
         }
       }
     })
 
-    await monitor.log('success', `✅ Found ${Object.keys(locations).length} locations`)
+    loggerHelper.log('success', `✅ Found ${Object.keys(locations).length} locations`)
     return locations
   } catch (error) {
     const duration = Date.now() - startTime
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-    await monitor.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
+    loggerHelper.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
     throw error
   }
 }
 
-// Get resorts by location
-const getResortsByLocation = async (location: Location, security: string): Promise<ScraperResort[]> => {
-  const payload: ApiPayload = {
+// Get resorts by location and store them immediately
+const getResortsByLocation = async (location: Location, security: string): Promise<number> => {
+  const payload = {
     action: 'filter_resort_by_region',
     iris_region: location.id,
     security
   }
 
   const resorts = await callApi(payload) as ScraperResort[]
+  let storedCount = 0
 
-  return resorts.map((resort: ScraperResort) => ({
-    ...resort,
-    id: parseInt(resort.irisId),
-    locationId: parseInt(location.id),
-    regionCode: location.regionCode,
-    countryCode: location.countryCode,
-    areaName: location.areaName
-  }))
+  for (const resort of resorts) {
+    const addresses = resort.addresses as Array<{ country: { name: string }, state: { name: string } }>
+    if (!resort.country && addresses?.[0]?.country?.name) {
+      resort.country = addresses[0].country.name
+    }
+    if (!resort.state && addresses?.[0]?.state?.name) {
+      resort.state = addresses[0].state.name
+    }
+
+    const normalizedResort = {
+      ...resort,
+      id: parseInt(resort.irisId),
+      locationId: parseInt(location.id),
+      regionCode: location.regionCode,
+      countryCode: location.countryCode,
+      areaName: location.areaName
+    }
+    
+    const success = await dbResorts.store(normalizedResort)
+    if (success) {
+      storedCount++
+      loggerHelper.log('info', `Stored resort: ${normalizedResort.name || normalizedResort.id}`)
+    }
+  }
+
+  return storedCount
 }
 
-// Get all resorts from all locations
-const getAllResorts = async (locations: Record<string, Location>, security: string): Promise<Record<string, ScraperResort>> => {
-  await monitor.log('info', '🏨 Fetching resorts from all locations...')
-  const resorts: Record<string, ScraperResort> = {}
+// Get all resorts from all locations and store them immediately
+const getAllResorts = async (locations: Record<string, Location>, security: string): Promise<number> => {
+  loggerHelper.log('info', '🏨 Fetching and storing resorts from all locations...')
 
   const results = await Promise.allConcurrent(1)(Object.keys(locations).map(locationId => async () => {
     const location = locations[locationId]
-    logger.info('getResortsByLocation ' + locationId)
+    loggerHelper.log('info', 'getResortsByLocation ' + locationId)
     return getResortsByLocation(location, security)
   }))
 
-  results.flat().forEach(result => {
-    if (!Object.keys(resorts).includes(result.id.toString())) {
-      resorts[result.id] = result
-    }
-  })
+  // Sum up all stored counts
+  const totalStored = results.reduce((sum, count) => sum + count, 0)
 
-  await monitor.log('success', `✅ Found ${Object.keys(resorts).length} unique resorts`)
-  return resorts
+  loggerHelper.log('success', `✅ Stored ${totalStored} resorts`)
+  return totalStored
 }
 
-// Get rooms for a resort
-const getRooms = async (resort: ScraperResort, security: string): Promise<Room[]> => {
-  const payload: ApiPayload = {
+// Get rooms for a resort and store them immediately
+const getRoomsAndStore = async (resort: ScraperResort, security: string): Promise<Room[]> => {
+  const payload = {
     action: 'filter_rooms_by_resort',
     irisresort: resort.id,
     iris_resort: resort.id,
@@ -591,7 +443,24 @@ const getRooms = async (resort: ScraperResort, security: string): Promise<Room[]
   }
 
   const rooms = await callApi(payload) as Room[]
+  
+  // Store each room immediately with resort_id
+  for (const room of rooms) {
+    const roomWithResort = {
+      ...room,
+      resort_id: resort.id
+    }
+    await dbRooms.store(roomWithResort)
+    loggerHelper.log('info', `Stored room ${room.id} for resort ${resort.id}`)
+  }
+
   return rooms
+}
+
+// Get rooms for a resort WITHOUT storing availability - just rooms
+const getRoomsOnly = async (resort: ScraperResort, security: string): Promise<{ totalRooms: number }> => {
+  const rooms = await getRoomsAndStore(resort, security)
+  return { totalRooms: rooms.length }
 }
 
 // Get availability for a specific room over a date range
@@ -602,10 +471,11 @@ const getAvailabilityByRoom = async (
   monthEnd: number, 
   security: string
 ): Promise<Availability> => {
-  const payload: ApiPayload = {
+  console.log('region id', resort)
+  const payload = {
     action: 'get_four_months_availability',
     iris_resort: resort.id,
-    iris_region: resort.locationId,
+    iris_region: resort.location_id,
     room_type: room.id,
     scrool_action: null,
     calendar_start: monthStart,
@@ -616,11 +486,16 @@ const getAvailabilityByRoom = async (
   let monthTotalArray: string[] = []
   let monthTotalPointsArray: string[] = []
   
-  const response = await callApi(payload)
-  
-  if (response === "0") {
-    logger.info('getAvailabilityByRoom-fallback start')
-    const url = 'https://clubwyndhamsp.com/book-now-new-with-calendar/'
+  await callApi(payload)
+   
+  // For now, let's force the fallback to test the HTML parsing
+  const shouldUseFallback = true
+  loggerHelper.log('info', '🔧 FORCING HTML FALLBACK FOR TESTING')
+
+  if (shouldUseFallback) {
+    loggerHelper.log('info', 'getAvailabilityByRoom-fallback start')
+    // Build URL with proper parameters to get the specific room/resort calendar
+    const url = `https://clubwyndhamsp.com/book-now-new-with-calendar/`
     const startTime = Date.now()
     
     try {
@@ -628,35 +503,75 @@ const getAvailabilityByRoom = async (
       const $ = cheerio.load(pageResponse.data)
 
       const duration = Date.now() - startTime
-      await monitor.logApiCall(url, 'GET', pageResponse.status, duration, undefined, 'Fallback calendar page')
+      loggerHelper.logApiCall(url, 'GET', pageResponse.status, duration, undefined, 'Fallback calendar page')
 
-      $('.calendars script').each((key, el) => {
-        const scriptContent = $(el).html()
-        if (!scriptContent) return
+      // DEBUG: Log the number of script tags found
+      const allScripts = $('script')
+      const calendarScripts = $('.calendars script')
+      loggerHelper.log('info', `🔍 DEBUG: Found ${allScripts.length} total script tags, ${calendarScripts.length} within .calendars`)
 
-        // Regular expressions to find the arrays
-        const monthArrayRegex = /var monthArray(\d+) = (\[.*?\]);/g
-        const monthPointArrayRegex = /var monthPointArray(\d+) = (\[.*?\]);/g
+      // Try both .calendars script and all script tags since the structure might vary
+      const scriptSelectors = ['.calendars script', 'script']
+      let foundArrays = false
 
-        let match
-        while ((match = monthArrayRegex.exec(scriptContent)) !== null) {
-          const monthArray = JSON.parse(match[2]) as string[]
-          monthTotalArray = [...monthTotalArray, ...monthArray]
-        }
+      for (const selector of scriptSelectors) {
+        if (foundArrays) break
 
-        while ((match = monthPointArrayRegex.exec(scriptContent)) !== null) {
-          const monthPointArray = JSON.parse(match[2]) as string[]
-          monthTotalPointsArray = [...monthTotalPointsArray, ...monthPointArray]
-        }
-      })
+        $(selector).each((key, el) => {
+          const scriptContent = $(el).html()
+          if (!scriptContent) return
+
+          // Check if this script contains calendar arrays
+          if (!scriptContent.includes('monthArray') && !scriptContent.includes('monthPointArray')) {
+            return
+          }
+
+          loggerHelper.log('info', `🔍 DEBUG: Processing script ${key + 1} with selector "${selector}"`)
+          loggerHelper.log('info', `🔍 DEBUG: Script content preview: ${scriptContent.substring(0, 200)}...`)
+
+          // Regular expressions to find the arrays - match the actual format from the HTML
+          const monthArrayRegex = /var monthArray(\d+) = (\[[^\]]+\]);/g
+          const monthPointArrayRegex = /var monthPointArray(\d+) = (\[[^\]]+\]);/g
+
+          let match
+          while ((match = monthArrayRegex.exec(scriptContent)) !== null) {
+            loggerHelper.log('info', `🔍 DEBUG: Found monthArray${match[1]}: ${match[2]}`)
+            try {
+              const monthArray = JSON.parse(match[2]) as string[]
+              monthTotalArray = [...monthTotalArray, ...monthArray]
+              foundArrays = true
+              loggerHelper.log('info', `🔍 DEBUG: Successfully parsed monthArray${match[1]} with ${monthArray.length} items`)
+            } catch (parseError) {
+              loggerHelper.log('error', `Failed to parse monthArray${match[1]}:`, parseError)
+            }
+          }
+
+          while ((match = monthPointArrayRegex.exec(scriptContent)) !== null) {
+            loggerHelper.log('info', `🔍 DEBUG: Found monthPointArray${match[1]}: ${match[2]}`)
+            try {
+              const monthPointArray = JSON.parse(match[2]) as string[]
+              monthTotalPointsArray = [...monthTotalPointsArray, ...monthPointArray]
+              foundArrays = true
+              loggerHelper.log('info', `🔍 DEBUG: Successfully parsed monthPointArray${match[1]} with ${monthPointArray.length} items`)
+            } catch (parseError) {
+              loggerHelper.log('error', `Failed to parse monthPointArray${match[1]}:`, parseError)
+            }
+          }
+        })
+      }
+
+      loggerHelper.log('info', `🔍 DEBUG: Final arrays - Availability: ${monthTotalArray.length} items, Points: ${monthTotalPointsArray.length} items`)
+      loggerHelper.log('info', `🔍 DEBUG: Sample availability values: ${monthTotalArray.slice(0, 10)}`)
+      loggerHelper.log('info', `🔍 DEBUG: Sample point values: ${monthTotalPointsArray.slice(0, 10)}`)
+
     } catch (error) {
       const duration = Date.now() - startTime
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
-      await monitor.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
+      loggerHelper.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
       throw error
     }
 
-    logger.info('getAvailabilityByRoom-fallback end')
+    loggerHelper.log('info', 'getAvailabilityByRoom-fallback end')
   }
 
   // Calculate date range
@@ -682,43 +597,75 @@ const getAvailabilityByRoom = async (
   }
 }
 
-// Get availability for all rooms in a resort
-const getAvailability = async (resort: ScraperResort, security: string): Promise<RoomAvailabilityData[] | null> => {
-  const rooms = await getRooms(resort, security)
-  if (rooms.length === 0) {
-    return null
+
+
+// Get availability ONLY for existing rooms (separate from room fetching)
+const getAvailabilityOnly = async (resort: ScraperResort, security: string): Promise<{ totalAvailabilities: number }> => {
+  // Get existing rooms from database instead of fetching new ones
+  const { data: rooms, error } = await supabase
+    .from('rooms')
+    .select('*')
+    .eq('resort_id', resort.id) // Assuming rooms table has resort_id FK
+
+  if (error || !rooms || rooms.length === 0) {
+    loggerHelper.log('warning', `No existing rooms found for resort ${resort.id}`)
+    return { totalAvailabilities: 0 }
   }
 
-  const availabilities = await Promise.allConcurrent(1)(rooms.map(room => async () => {
+  let totalAvailabilities = 0
+
+  await Promise.allConcurrent(1)(rooms.map(room => async () => {
     const availabilityQ1 = await getAvailabilityByRoom(resort, room, 0, 8, security)
     const availabilityQ2 = await getAvailabilityByRoom(resort, room, 8, 16, security)
     
     logger.info(`Availability dates: ${availabilityQ1.ToDate} - ${availabilityQ2.ToDate}`)
     
-    return {
-      room,
-      availability: {
-        FromDate: availabilityQ1.FromDate,
-        ToDate: availabilityQ2.ToDate,
-        Room: [{
-          AvailArray: [
-            ...availabilityQ1.Room[0].AvailArray,
-            ...availabilityQ2.Room[0].AvailArray,
-          ],
-          PointArray: [
-            ...availabilityQ1.Room[0].PointArray,
-            ...availabilityQ2.Room[0].PointArray,
-          ]
-        }]
-      }
+    // Combine the two availability periods
+    const combinedAvailability: Availability = {
+      FromDate: availabilityQ1.FromDate,
+      ToDate: availabilityQ2.ToDate,
+      Room: [{
+        AvailArray: [
+          ...availabilityQ1.Room[0].AvailArray,
+          ...availabilityQ2.Room[0].AvailArray,
+        ],
+        PointArray: [
+          ...availabilityQ1.Room[0].PointArray,
+          ...availabilityQ2.Room[0].PointArray,
+        ]
+      }]
     }
+
+    // Normalize and store availability data immediately
+    const normalizedAvailability = normalizeAvailabilityData(combinedAvailability, room.id)
+    for (const availabilityData of normalizedAvailability) {
+      await dbAvailabilities.store(availabilityData)
+      totalAvailabilities++
+    }
+    logger.info(`Stored ${normalizedAvailability.length} availability records for room ${room.id}`)
   }))
 
-  return availabilities
+  return { totalAvailabilities }
 }
 
 // Normalize availability data for database storage
 const normalizeAvailabilityData = (availability: Availability, roomId: number): AvailabilityRecord[] => {
+  // DEBUG: Print the input availability data
+  loggerHelper.log('info', '🔍 DEBUG: Input availability data for normalization:', {
+    roomId,
+    availability: {
+      FromDate: availability.FromDate,
+      ToDate: availability.ToDate,
+      RoomCount: availability.Room.length,
+      FirstRoomData: availability.Room[0] ? {
+        AvailArrayLength: availability.Room[0].AvailArray?.length,
+        PointArrayLength: availability.Room[0].PointArray?.length,
+        FirstFewAvailValues: availability.Room[0].AvailArray?.slice(0, 5),
+        FirstFewPointValues: availability.Room[0].PointArray?.slice(0, 5)
+      } : 'No room data'
+    }
+  })
+
   const fromDate = new Date(availability.FromDate)
   const toDate = new Date(availability.ToDate)
   const roomData = availability.Room[0]
@@ -729,13 +676,33 @@ const normalizeAvailabilityData = (availability: Availability, roomId: number): 
   for (; loopDate <= toDate; loopDate.setDate(loopDate.getDate() + 1)) {
     const index = Math.floor((loopDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24))
 
-    normalizedData.push({
+    const record = {
       roomId,
       date: loopDate.toISOString().split('T')[0],
       availability_status: parseInt(roomData.AvailArray[index], 10),
       point: parseInt(roomData.PointArray[index], 10)
-    })
+    }
+
+    normalizedData.push(record)
+
+    // DEBUG: Print first record for inspection
+    if (normalizedData.length === 1) {
+      loggerHelper.log('info', '🔍 DEBUG: First normalized record sample:', {
+        record,
+        rawAvailValue: roomData.AvailArray[index],
+        rawPointValue: roomData.PointArray[index],
+        index,
+        totalDays: Math.floor((toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
+      })
+    }
   }
+
+  // DEBUG: Print summary of normalized data
+  loggerHelper.log('info', '🔍 DEBUG: Normalized data summary:', {
+    totalRecords: normalizedData.length,
+    firstRecord: normalizedData[0],
+    lastRecord: normalizedData[normalizedData.length - 1]
+  })
 
   return normalizedData
 }
@@ -761,8 +728,8 @@ interface SyncResult {
 // Main scraping functions
 export const syncResorts = async (): Promise<SyncResult> => {
   try {
-    await monitor.setStep('Syncing Resorts')
-    await monitor.log('info', '🏨 Starting resort sync...')
+    loggerHelper.setStep('Syncing Resorts')
+    loggerHelper.log('info', '🏨 Starting resort sync...')
     
     const authenticated = await ensureAuthenticated()
     if (!authenticated) {
@@ -770,37 +737,28 @@ export const syncResorts = async (): Promise<SyncResult> => {
     }
     const security = await getSecurity()
     const locations = await getLocations()
-    const resorts = await getAllResorts(locations, security)
+    const storedResorts = await getAllResorts(locations, security)
 
-    let successCount = 0
-    const totalResorts = Object.keys(resorts).length
-    
-    for (const resort of Object.values(resorts)) {
-      const success = await dbResorts.store(resort)
-      if (success) successCount++
-      await monitor.updateProgress('resorts', successCount, totalResorts)
-    }
-
-    await monitor.log('success', `✅ Resort sync completed: ${successCount}/${totalResorts} resorts stored`)
+    loggerHelper.log('success', `✅ Resort sync completed: ${storedResorts} resorts stored`)
     
     return {
       success: true,
       message: 'Resort sync completed successfully',
       data: {
-        totalResorts,
-        storedResorts: successCount
+        totalResorts: storedResorts,
+        storedResorts: storedResorts
       }
     }
   } catch (error) {
-    await monitor.log('error', '❌ Resort sync failed', error)
+    loggerHelper.log('error', '❌ Resort sync failed', error)
     throw error
   }
 }
 
 export const syncRooms = async (): Promise<SyncResult> => {
   try {
-    await monitor.setStep('Syncing Rooms & Availability')
-    await monitor.log('info', '🏠 Starting rooms/availability sync...')
+    loggerHelper.setStep('Syncing Rooms')
+    loggerHelper.log('info', '🏠 Starting rooms sync...')
     
     const authenticated = await ensureAuthenticated()
     if (!authenticated) {
@@ -808,123 +766,158 @@ export const syncRooms = async (): Promise<SyncResult> => {
     }
     const security = await getSecurity()
 
-    const resorts = await dbResorts.fetchByCountryCode(["AUS"])
-    await monitor.log('info', `Fetching availability for ${resorts.length} resorts`)
+    // get countrycode AUS and ANZ
+    const resorts = await dbResorts.fetchByCountryCode(["AUS", "ANZ"])
+    
+    loggerHelper.log('info', `Fetching rooms for ${resorts.length} resorts`)
     
     let processedResorts = 0
     let totalRooms = 0
+
+    await Promise.allConcurrent(1)(resorts.map(resort => async () => {
+      processedResorts++
+      loggerHelper.log('info', `Getting resort #${processedResorts}: ${resort.name || resort.id}`)
+      loggerHelper.updateProgress('rooms', processedResorts, resorts.length)
+      
+      const results = await getRoomsOnly(resort as unknown as ScraperResort, security)
+      if (!results || results.totalRooms === 0) {
+        loggerHelper.log('info', 'No rooms found')
+        return
+      }
+
+      totalRooms += results.totalRooms
+      await delay(5000) // 5 second delay between resorts
+    }))
+
+    loggerHelper.log('success', `✅ Rooms sync completed: ${processedResorts} resorts, ${totalRooms} rooms`)
+    
+    return {
+      success: true,
+      message: 'Rooms sync completed successfully',
+      data: {
+        processedResorts,
+        totalRooms
+      }
+    }
+  } catch (error) {
+    loggerHelper.log('error', '❌ Rooms sync failed', error)
+    throw error
+  }
+}
+
+export const syncAvailabilities = async (): Promise<SyncResult> => {
+  try {
+    loggerHelper.setStep('Syncing Availabilities')
+    loggerHelper.log('info', '📅 Starting availabilities sync...')
+    
+    const authenticated = await ensureAuthenticated()
+    if (!authenticated) {
+      throw new Error('Authentication failed')
+    }
+    const security = await getSecurity()
+
+    const resorts = await dbResorts.fetchByCountryCode(["AUS", "ANZ"])
+
+    loggerHelper.log('info', `Fetching availability for ${resorts.length} resorts`)
+    
+    let processedResorts = 0
     let totalAvailabilities = 0
 
     await Promise.allConcurrent(1)(resorts.map(resort => async () => {
       processedResorts++
-      await monitor.log('info', `Getting resort #${processedResorts}: ${resort.name || resort.id}`)
-      await monitor.updateProgress('rooms', processedResorts, resorts.length)
+      loggerHelper.log('info', `Getting availability for resort #${processedResorts}: ${resort.name || resort.id}`)
+      loggerHelper.updateProgress('availability', processedResorts, resorts.length)
       
-      const results = await getAvailability(resort as unknown as ScraperResort, security)
-      if (!results) {
-        await monitor.log('info', 'No valid availabilities found')
+      const results = await getAvailabilityOnly(resort as unknown as ScraperResort, security)
+      if (!results || results.totalAvailabilities === 0) {
+        loggerHelper.log('info', 'No availabilities found')
         return
       }
 
-      for (const data of results) {
-        const room = data.room
-        const availability = data.availability
-        
-        await dbRooms.store(room)
-        totalRooms++
-
-        const normalizedAvailability = normalizeAvailabilityData(availability, room.id)
-        for (const availabilityData of normalizedAvailability) {
-          await dbAvailabilities.store(availabilityData)
-          totalAvailabilities++
-        }
-      }
-
-      await monitor.updateProgress('availability', totalAvailabilities, totalAvailabilities)
+      totalAvailabilities += results.totalAvailabilities
       await delay(5000) // 5 second delay between resorts
     }))
 
-    await monitor.log('success', `✅ Rooms/availability sync completed: ${processedResorts} resorts, ${totalRooms} rooms, ${totalAvailabilities} availability records`)
+    loggerHelper.log('success', `✅ Availabilities sync completed: ${processedResorts} resorts, ${totalAvailabilities} availability records`)
     
     return {
       success: true,
-      message: 'Rooms and availability sync completed successfully',
+      message: 'Availabilities sync completed successfully',
       data: {
         processedResorts,
-        totalRooms,
         totalAvailabilities
       }
     }
   } catch (error) {
-    await monitor.log('error', '❌ Rooms/availability sync failed', error)
+    loggerHelper.log('error', '❌ Availabilities sync failed', error)
     throw error
   }
 }
 
 // Combined scraping function with intelligent scheduling
 export const scrapeWyndhamInventory = async () => {
-  await monitor.setRunning(true)
-  await monitor.log('info', '🚀 Starting intelligent Wyndham inventory scraping...')
+  loggerHelper.setRunning(true)
+  loggerHelper.log('info', '🚀 Starting intelligent Wyndham inventory scraping...')
   
   try {
     // Create scraping plan
     const plan = await intelligentScheduler.createScrapingPlan()
-    await monitor.log('info', `📋 Scraping plan: ${plan.reason}`)
+    loggerHelper.log('info', `📋 Scraping plan: ${plan.reason}`)
     
-         let resortResult: SyncResult = { success: true, message: 'Skipped', data: { storedResorts: 0, totalResorts: 0 } }
-     let roomResult: SyncResult = { success: true, message: 'Skipped', data: { totalRooms: 0, totalAvailabilities: 0, processedResorts: 0 } }
+    let resortResult: SyncResult = { success: true, message: 'Skipped', data: { storedResorts: 0, totalResorts: 0 } }
+    let roomResult: SyncResult = { success: true, message: 'Skipped', data: { totalRooms: 0, processedResorts: 0 } }
+    let availabilityResult: SyncResult = { success: true, message: 'Skipped', data: { totalAvailabilities: 0, processedResorts: 0 } }
     
     // Only scrape what's needed based on frequency
     if (plan.needsResorts) {
-      await monitor.log('info', '🏨 Scraping resorts (due for update)...')
+      loggerHelper.log('info', '🏨 Scraping resorts (due for update)...')
       resortResult = await syncResorts()
       await intelligentScheduler.updateLastScrapedTime('resorts')
     } else {
-      await monitor.log('info', '⏭️ Skipping resorts (not due for update)')
+      loggerHelper.log('info', '⏭️ Skipping resorts (not due for update)')
     }
     
     if (plan.needsRooms) {
-      await monitor.log('info', '🏠 Scraping rooms (due for update)...')
+      loggerHelper.log('info', '🏠 Scraping rooms (due for update)...')
       roomResult = await syncRooms()
       await intelligentScheduler.updateLastScrapedTime('rooms')
     } else {
-      await monitor.log('info', '⏭️ Skipping rooms (not due for update)')
+      loggerHelper.log('info', '⏭️ Skipping rooms (not due for update)')
     }
     
     if (plan.needsAvailabilities) {
-      await monitor.log('info', '📅 Scraping availabilities (due for update)...')
-      // Note: availability scraping is handled within syncRooms for now
-      // In future, this could be separated for more granular control
-      if (!plan.needsRooms) {
-        // If rooms weren't scraped, we need a separate availability scraping function
-        await monitor.log('info', '📅 Availability-only scraping not yet implemented')
-      }
+      loggerHelper.log('info', '📅 Scraping availabilities (due for update)...')
+      availabilityResult = await syncAvailabilities()
       await intelligentScheduler.updateLastScrapedTime('availabilities')
     } else {
-      await monitor.log('info', '⏭️ Skipping availabilities (not due for update)')
+      loggerHelper.log('info', '⏭️ Skipping availabilities (not due for update)')
     }
     
     const result = {
       scraped_at: new Date().toISOString(),
       resorts_updated: resortResult.data?.storedResorts || 0,
       total_rooms_found: roomResult.data?.totalRooms || 0,
-      available_rooms: roomResult.data?.totalAvailabilities || 0,
-      new_availability: roomResult.data?.totalAvailabilities || 0,
-      processed_resorts: roomResult.data?.processedResorts || 0,
+      available_rooms: availabilityResult.data?.totalAvailabilities || 0,
+      new_availability: availabilityResult.data?.totalAvailabilities || 0,
+      processed_resorts: Math.max(
+        resortResult.data?.processedResorts || 0,
+        roomResult.data?.processedResorts || 0,
+        availabilityResult.data?.processedResorts || 0
+      ),
       plan: plan,
       next_scraping: await intelligentScheduler.getNextScrapingTimes()
     }
     
-    await monitor.setStep('Completed')
-    await monitor.log('success', '✅ Intelligent scraping completed successfully', result)
-    await monitor.setRunning(false)
+    loggerHelper.setStep('Completed')
+    loggerHelper.log('success', '✅ Intelligent scraping completed successfully', result)
+    loggerHelper.setRunning(false)
     
     return result
     
   } catch (error) {
-    await monitor.setStep('Failed')
-    await monitor.log('error', '❌ Intelligent scraping failed', error)
-    await monitor.setRunning(false)
+    loggerHelper.setStep('Failed')
+    loggerHelper.log('error', '❌ Intelligent scraping failed', error)
+    loggerHelper.setRunning(false)
     throw error
   }
 }
