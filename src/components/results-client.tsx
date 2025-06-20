@@ -389,7 +389,6 @@ export default function ResultsClient({ regions }: { regions: Region[] }) {
                         key={`${monthGroup.month}-${resort.resort_name}-${index}`}
                         resort={resort}
                         isExpanded={isExpandedView}
-                        viewMode={viewMode}
                       />
                     ))}
                   </div>
