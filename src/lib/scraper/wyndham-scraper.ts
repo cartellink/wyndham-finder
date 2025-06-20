@@ -45,8 +45,6 @@ interface Availability {
   }>
 }
 
-
-
 interface AvailabilityRecord {
   roomId: number
   date: string
@@ -55,10 +53,7 @@ interface AvailabilityRecord {
   [key: string]: unknown // Add index signature to match the model's Availability interface
 }
 
-
-
 // Monitoring interface
-
 
 import * as cheerio from 'cheerio'
 import axios, { AxiosInstance } from 'axios'
@@ -69,6 +64,7 @@ import { logger } from '../logger'
 import * as dbResorts from '../models/resorts'
 import * as dbRooms from '../models/rooms'  
 import * as dbAvailabilities from '../models/availabilities'
+import { mapRegionToId } from '../utils'
 import '../promiseAllConcurrent'
 import { intelligentScheduler } from './intelligent-scheduler'
 import { authSessionManager } from './auth-session-manager'
@@ -79,8 +75,6 @@ const jar = new CookieJar()
 const client: AxiosInstance = wrapper(axios.create({ jar, timeout: 30000 }))
 
 const baseUrl = 'http://clubwyndhamsp.com'
-
-
 
 // Monitoring helper
 // Simple logging helper to replace monitor
@@ -113,8 +107,6 @@ const loggerHelper = {
     logger.info(`Progress - ${type}: ${processed}/${total}`)
   }
 }
-
-
 
 // Make API calls to Club Wyndham with monitoring and session recovery
 const callApi = async (payload: Record<string, unknown>, retryCount: number = 0): Promise<unknown> => {
@@ -192,8 +184,6 @@ const callApi = async (payload: Record<string, unknown>, retryCount: number = 0)
     throw error
   }
 }
-
-
 
 // Get security nonce from the main page
 const getSecurity = async (): Promise<string> => {
@@ -359,15 +349,19 @@ const getLocations = async (): Promise<Record<string, Location>> => {
             countryCode,
             areaName
           }
-          loggerHelper.log('info', `Parsed location: ${regionCode}-${countryCode} ${areaName}`)
+          loggerHelper.log('info', `Parsed location: ${regionCode}-${countryCode} ${areaName} (ID: ${id})`)
         } else {
-                      loggerHelper.log('error', `Unable to parse location: ${text}`)
-            loggerHelper.log('warning', `Failed to parse location text: "${text}"`)
+          loggerHelper.log('warning', `Failed to parse location text: "${text}" (ID: ${id})`)
         }
       }
     })
 
     loggerHelper.log('success', `✅ Found ${Object.keys(locations).length} locations`)
+    
+    // Log a sample of parsed locations for debugging
+    const sampleLocations = Object.values(locations).slice(0, 5)
+    loggerHelper.log('info', `Sample locations:`, sampleLocations)
+    
     return locations
   } catch (error) {
     const duration = Date.now() - startTime
@@ -397,10 +391,20 @@ const getResortsByLocation = async (location: Location, security: string): Promi
       resort.state = addresses[0].state.name
     }
 
+    // Map the region using the new normalized region system
+    const regionId = await mapRegionToId(
+      location.id, // iris_id from the location
+      location.countryCode,
+      resort.state as string | undefined,
+      location.areaName
+    )
+
     const normalizedResort = {
       ...resort,
       id: parseInt(resort.irisId),
       locationId: parseInt(location.id),
+      regionId: regionId || undefined, // Convert null to undefined for TypeScript
+      // Keep old fields for backward compatibility during transition
       regionCode: location.regionCode,
       countryCode: location.countryCode,
       areaName: location.areaName
@@ -409,7 +413,9 @@ const getResortsByLocation = async (location: Location, security: string): Promi
     const success = await dbResorts.store(normalizedResort)
     if (success) {
       storedCount++
-      loggerHelper.log('info', `Stored resort: ${normalizedResort.name || normalizedResort.id}`)
+      loggerHelper.log('info', `Stored resort: ${normalizedResort.name || normalizedResort.id} with region_id: ${regionId}`)
+    } else {
+      loggerHelper.log('error', `Failed to store resort: ${normalizedResort.name || normalizedResort.id}`)
     }
   }
 
@@ -596,8 +602,6 @@ const getAvailabilityByRoom = async (
     }]
   }
 }
-
-
 
 // Get availability ONLY for existing rooms (separate from room fetching)
 const getAvailabilityOnly = async (resort: ScraperResort, security: string): Promise<{ totalAvailabilities: number }> => {
