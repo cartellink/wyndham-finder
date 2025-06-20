@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Badge } from "@/components/ui/badge"
 import { Calendar } from "@/components/ui/calendar"
 import { MapPin, Star, Users, CreditCard } from "lucide-react"
+import Image from "next/image"
 
 interface ResortDetailModalProps {
   isOpen: boolean
@@ -43,10 +44,11 @@ export function ResortDetailModal({ isOpen, onClose, resort }: ResortDetailModal
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-4">
             <div className="aspect-video relative rounded-lg overflow-hidden">
-              <img
+              <Image
                 src={resort.image}
                 alt={resort.name}
                 className="object-cover w-full h-full"
+                fill
               />
             </div>
 
