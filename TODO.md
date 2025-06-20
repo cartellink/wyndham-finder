@@ -7,4 +7,4 @@
   - [ ] build multi token scraping
 - [ ] add supabase login
   - [ ] track usage in db
-- [ ] migrate ui across
+- [X] migrate ui across

@@ -17,12 +17,14 @@ import { useState } from "react"
 import { DateRange } from "react-day-picker"
 import { cn } from "@/lib/utils"
 import { Slider } from "@/components/ui/slider"
+import { useRouter } from "next/navigation"
 
 export function HomeClient({
   regions,
 }: {
   regions: { value: string; label: string }[]
 }) {
+  const router = useRouter()
   const [date, setDate] = useState<DateRange | undefined>()
   const [guests, setGuests] = useState(2)
   const [location, setLocation] = useState("")
@@ -32,6 +34,25 @@ export function HomeClient({
   const [whereOpen, setWhereOpen] = useState(false)
   const [dateOpen, setDateOpen] = useState(false)
   const [guestsOpen, setGuestsOpen] = useState(false)
+
+  const handleSearch = () => {
+    if (!date?.from || !date?.to) {
+      alert("Please select a date range")
+      return
+    }
+
+    const searchParams = new URLSearchParams({
+      region_id: location || "",
+      date_start: date.from.toISOString().split('T')[0],
+      date_end: date.to.toISOString().split('T')[0],
+      stay_min: stayLength[0].toString(),
+      stay_max: stayLength[1].toString(),
+      guest_min: guests.toString(),
+      max_credits: credits[0].toString(),
+    })
+
+    router.push(`/results?${searchParams.toString()}`)
+  }
 
   return (
     <div className="min-h-screen bg-[#f7f7f7] pb-12">
@@ -196,7 +217,10 @@ export function HomeClient({
                 </div>
               </div>
 
-              <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 text-lg">
+              <Button 
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 text-lg"
+                onClick={handleSearch}
+              >
                 <Search className="mr-2 h-5 w-5" />
                 Search Resorts
               </Button>

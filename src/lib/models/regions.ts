@@ -184,7 +184,7 @@ export const getRegionsForSelect = async (): Promise<{ value: string; label: str
     const regions = await getAllRegions()
     
     return regions.map(region => ({
-      value: region.irisId.toString(),
+      value: region.id.toString(),
       label: `${region.continentCode}-(${region.countryCode}) ${region.name}`
     }))
   } catch (error) {

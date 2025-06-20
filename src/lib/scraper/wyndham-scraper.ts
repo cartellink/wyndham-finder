@@ -64,6 +64,7 @@ import { logger } from '../logger'
 import * as dbResorts from '../models/resorts'
 import * as dbRooms from '../models/rooms'  
 import * as dbAvailabilities from '../models/availabilities'
+import * as dbMarketingResorts from '../models/marketing-resorts'
 import { mapRegionToId } from '../utils'
 import '../promiseAllConcurrent'
 import { intelligentScheduler } from './intelligent-scheduler'
@@ -135,17 +136,23 @@ const callApi = async (payload: Record<string, unknown>, retryCount: number = 0)
     if (response.data === "0" || response.data === "-1" || 
         (typeof response.data === 'string' && response.data.includes('login'))) {
       
-      // Possible session expiration - try to re-authenticate once
+      // Possible session expiration - verify with proper authentication check
       if (retryCount === 0) {
-        loggerHelper.log('warning', '⚠️ API call returned session-expired response, attempting re-authentication...')
+        loggerHelper.log('warning', '⚠️ API call returned possible session-expired response, verifying authentication...')
         
-        const reAuthSuccess = await ensureAuthenticated()
-        if (reAuthSuccess) {
-          loggerHelper.log('info', '🔄 Re-authentication successful, retrying API call...')
-          return await callApi(payload, retryCount + 1) // Retry with re-auth
+        const isAuth = await isAuthenticated()
+        if (!isAuth) {
+          loggerHelper.log('warning', '⚠️ Authentication check failed, attempting re-authentication...')
+          const reAuthSuccess = await ensureAuthenticated()
+          if (reAuthSuccess) {
+            loggerHelper.log('info', '🔄 Re-authentication successful, retrying API call...')
+            return await callApi(payload, retryCount + 1) // Retry with re-auth
+          } else {
+            loggerHelper.log('error', '❌ Re-authentication failed')
+            throw new Error('Session expired and re-authentication failed')
+          }
         } else {
-          loggerHelper.log('error', '❌ Re-authentication failed')
-          throw new Error('Session expired and re-authentication failed')
+          loggerHelper.log('info', '✅ Authentication is still valid, API response might be legitimate')
         }
       } else {
         loggerHelper.log('error', '❌ API call failed even after re-authentication')
@@ -182,6 +189,42 @@ const callApi = async (payload: Record<string, unknown>, retryCount: number = 0)
     
     loggerHelper.logApiCall(url, 'POST', 0, duration, restForError, errorMessage)
     throw error
+  }
+}
+
+// Check if we're authenticated by testing the user-dashboard endpoint
+const isAuthenticated = async (): Promise<boolean> => {
+  const url = 'https://clubwyndhamsp.com/user-dashboard/'
+  const startTime = Date.now()
+  
+  try {
+    loggerHelper.log('info', '🔍 Checking authentication status...')
+    
+    const response = await client.get(url)
+    const duration = Date.now() - startTime
+    
+    // Check for the specific login prompt HTML pattern
+    const responseText = typeof response.data === 'string' ? response.data : String(response.data)
+    const needsLogin = responseText.includes('Please <a class="text-link" href="#" data-toggle="modal" data-target="#login"')
+    
+    loggerHelper.logApiCall(url, 'GET', response.status, duration, undefined, needsLogin ? 'Not authenticated' : 'Authenticated')
+    
+    if (needsLogin) {
+      loggerHelper.log('warning', '❌ Authentication check failed - login required')
+      return false
+    } else {
+      loggerHelper.log('success', '✅ Authentication check passed')
+      return true
+    }
+    
+  } catch (error) {
+    const duration = Date.now() - startTime
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    loggerHelper.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
+    
+    // If we can't access the dashboard, assume we're not authenticated
+    loggerHelper.log('error', '❌ Authentication check failed with error', error)
+    return false
   }
 }
 
@@ -263,21 +306,15 @@ const ensureAuthenticated = async (): Promise<boolean> => {
           await jar.setCookie(manualCookie, baseUrl)
 
           // also add this cookies
-          const wordpressLoggedInCookie = 'wordpress_logged_in_abcdef123456789=test'
+          const wordpressLoggedInCookie = 'wordpress_logged_in_abcdef123456789=test; Path=/; Domain=clubwyndhamsp.com'
           await jar.setCookie(wordpressLoggedInCookie, baseUrl)
 
           client.defaults.jar = jar
           
-          // Test if it works with a simple API call
-          const security = await getSecurity()
-          const testPayload = {
-            action: 'filter_resort_by_region',
-            iris_region: '690',
-            security
-          }
-          const testResponse = await callApi(testPayload)
+          // Test if authentication works by checking the user dashboard
+          const isAuth = await isAuthenticated()
           
-          if (testResponse && testResponse !== "0" && testResponse !== "-1" && Array.isArray(testResponse)) {
+          if (isAuth) {
             loggerHelper.log('success', '✅ Database session is working perfectly!')
             
             // Update last_used_at timestamp
@@ -288,7 +325,8 @@ const ensureAuthenticated = async (): Promise<boolean> => {
             
             return true
           } else {
-            loggerHelper.log('warning', '⚠️ Database session exists but not working, will re-authenticate')
+            loggerHelper.log('warning', '⚠️ Database session exists but authentication check failed, will re-authenticate')
+            await supabase.from('auth_sessions').update({ is_valid: false }).eq('id', 'wyndham-auth')
           }
         } else {
           loggerHelper.log('warning', '⚠️ Session found but no PHPSESSID in cookies')
@@ -319,6 +357,7 @@ const ensureAuthenticated = async (): Promise<boolean> => {
 }
 
 // Get all location regions
+ 
 const getLocations = async (): Promise<Record<string, Location>> => {
   loggerHelper.log('info', '🌍 Fetching location regions...')
   const url = 'https://clubwyndhamsp.com/book-now-new-with-calendar/'
@@ -367,6 +406,353 @@ const getLocations = async (): Promise<Record<string, Location>> => {
     const duration = Date.now() - startTime
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
     loggerHelper.logApiCall(url, 'GET', 0, duration, undefined, errorMessage)
+    throw error
+  }
+}
+
+// Marketing resort information from the public website
+interface MarketingResort {
+  name: string
+  url: string
+  imageUrl: string // Initial image from listing page
+  excerpt: string
+  resortId: string | null
+  slug?: string
+}
+
+// Scrape marketing website for resort information
+const getMarketingResorts = async (): Promise<MarketingResort[]> => {
+  loggerHelper.log('info', '🎯 Fetching marketing resort data...')
+  
+  const allResorts: MarketingResort[] = []
+  let currentPage = 1
+  let maxPages = 1
+  
+  // Keep fetching pages until we reach the maximum
+  while (currentPage <= maxPages) {
+    loggerHelper.log('info', `📖 Fetching marketing page ${currentPage}/${maxPages}...`)
+    
+    const payload = {
+      action: 'resort_loadmore',
+      paged: currentPage.toString()
+    }
+    
+    try {
+      const response = await callApi(payload) as { max: number, html: string }
+      
+      // Update max pages from response
+      if (response.max) {
+        maxPages = response.max
+        loggerHelper.log('info', `📊 Total pages available: ${maxPages}`)
+      }
+      
+      // Parse HTML content to extract resort information
+      const $ = cheerio.load(response.html)
+      
+      $('.resort-box').each((index, element) => {
+        const $el = $(element)
+        
+        // Extract resort name
+        const nameElement = $el.find('h4 a.text-link')
+        const name = nameElement.text().trim()
+        const url = nameElement.attr('href') || ''
+        
+        // Extract image URL
+        const imageUrl = $el.find('.image img').attr('src') || ''
+        
+        // Extract excerpt/description
+        const excerpt = $el.find('.excerpt a').text().trim()
+        
+        // Extract resort ID from booking link
+        const bookingLink = $el.find('.booknow a').attr('href') || ''
+        const resortIdMatch = bookingLink.match(/resortId=(\d+)/)
+        const resortId = resortIdMatch ? resortIdMatch[1] : null
+        
+        // Extract slug from URL
+        const urlParts = url.split('/')
+        const slug = urlParts[urlParts.length - 2] || urlParts[urlParts.length - 1]
+        
+        if (name && url) {
+          const resort: MarketingResort = {
+            name,
+            url,
+            imageUrl,
+            excerpt,
+            resortId,
+            slug
+          }
+          
+          allResorts.push(resort)
+          loggerHelper.log('info', `✅ Found resort: ${name} (ID: ${resortId || 'unknown'})`)
+        }
+      })
+      
+      loggerHelper.log('info', `📄 Page ${currentPage}: Found ${$('.resort-box').length} resorts`)
+      currentPage++
+      
+      // Add delay between requests to be respectful
+      if (currentPage <= maxPages) {
+        await delay(2000) // 2 second delay between pages
+      }
+      
+    } catch (error) {
+      loggerHelper.log('error', `❌ Failed to fetch marketing page ${currentPage}`, error)
+      break
+    }
+  }
+  
+  loggerHelper.log('success', `✅ Marketing scrape completed: ${allResorts.length} resorts found`)
+  return allResorts
+}
+
+// Scrape detailed resort page for additional information
+const getResortDetails = async (resort: MarketingResort): Promise<MarketingResort & { heroImage?: string, galleryImages?: string[], additionalInfo?: Record<string, unknown> }> => {
+  loggerHelper.log('info', `🔍 Fetching details for: ${resort.name}`)
+  
+  try {
+    const response = await client.get(resort.url)
+    const $ = cheerio.load(response.data)
+    
+    // Extract hero image from the specific selector
+    let heroImage = ''
+    const heroImageElement = $('.resort-hero-banner .image picture img').first()
+    if (heroImageElement.length > 0) {
+      heroImage = heroImageElement.attr('src') || ''
+    }
+    
+    // Fallback to picture source elements if img doesn't have src
+    if (!heroImage) {
+      const pictureSource = $('.resort-hero-banner .image picture source').first()
+      if (pictureSource.length > 0) {
+        heroImage = pictureSource.attr('srcset')?.split(' ')[0] || ''
+      }
+    }
+    
+    // Fallback to CSS background image in style attribute
+    if (!heroImage) {
+      const imageDiv = $('.resort-hero-banner .image[style*="background:url"]').first()
+      if (imageDiv.length > 0) {
+        const styleAttr = imageDiv.attr('style') || ''
+        const bgUrlMatch = styleAttr.match(/background:url\(([^)]+)\)/)
+        if (bgUrlMatch && bgUrlMatch[1]) {
+          heroImage = bgUrlMatch[1]
+        }
+      }
+    }
+    
+    // If still no hero image found, try meta property images
+    if (!heroImage) {
+      const ogImage = $('meta[property="og:image"]').attr('content')
+      if (ogImage) {
+        heroImage = ogImage
+      }
+    }
+    
+    // Extract gallery images from the owl carousel
+    const galleryImages: string[] = []
+    $('.gallery .item img').each((index, element) => {
+      const imgSrc = $(element).attr('src')
+      if (imgSrc && !galleryImages.includes(imgSrc)) {
+        galleryImages.push(imgSrc)
+      }
+    })
+    
+    // Remove duplicates and filter out cloned images if they exist
+    const uniqueGalleryImages = [...new Set(galleryImages)]
+    
+    // Extract additional metadata that might be useful
+    const additionalInfo: Record<string, unknown> = {
+      metaDescription: $('meta[name="description"]').attr('content') || '',
+      ogTitle: $('meta[property="og:title"]').attr('content') || '',
+      ogDescription: $('meta[property="og:description"]').attr('content') || ''
+    }
+    
+    loggerHelper.log('info', `✅ Details extracted for: ${resort.name}${heroImage ? ' (with hero image)' : ''}${uniqueGalleryImages.length > 0 ? ` (${uniqueGalleryImages.length} gallery images)` : ''}`)
+    
+    return {
+      ...resort,
+      heroImage: heroImage || undefined,
+      galleryImages: uniqueGalleryImages.length > 0 ? uniqueGalleryImages : undefined,
+      additionalInfo
+    }
+    
+  } catch (error) {
+    loggerHelper.log('error', `❌ Failed to fetch details for: ${resort.name}`, error)
+    return resort
+  }
+}
+
+// Match marketing resorts with existing database resorts and calculate confidence
+const matchMarketingWithDatabase = async (marketingResorts: MarketingResort[]) => {
+  loggerHelper.log('info', '🔗 Matching marketing data with database resorts...')
+  
+  const matches: Array<{
+    marketing: MarketingResort
+    dbResort?: unknown
+    matchMethod: 'resortId' | 'name' | 'slug' | 'none'
+    confidence: number
+  }> = []
+  
+  for (const marketing of marketingResorts) {
+    let dbResort = null
+    let matchMethod: 'resortId' | 'name' | 'slug' | 'none' = 'none'
+    let confidence = 0.0
+    
+    // Try to match by resort ID first (most reliable)
+    if (marketing.resortId) {
+      const { data: resortById } = await supabase
+        .from('resorts')
+        .select('*')
+        .eq('iris_id', marketing.resortId)
+        .single()
+      
+      if (resortById) {
+        dbResort = resortById
+        matchMethod = 'resortId'
+        confidence = 1.0 // Exact ID match is 100% confidence
+      }
+    }
+    
+    // If no match by ID, try by name similarity
+    if (!dbResort) {
+      const { data: resortsByName } = await supabase
+        .from('resorts')
+        .select('*')
+        .ilike('name', `%${marketing.name.replace(/WorldMark |Wyndham |Ramada /i, '')}%`)
+      
+      if (resortsByName && resortsByName.length > 0) {
+        dbResort = resortsByName[0] // Take the first match
+        matchMethod = 'name'
+        confidence = 0.8 // Name match is 80% confidence
+      }
+    }
+    
+    // Try matching by URL slug if still no match
+    if (!dbResort && marketing.slug) {
+      const { data: resortsBySlug } = await supabase
+        .from('resorts')
+        .select('*')
+        .ilike('name', `%${marketing.slug.replace(/-/g, ' ')}%`)
+      
+      if (resortsBySlug && resortsBySlug.length > 0) {
+        dbResort = resortsBySlug[0]
+        matchMethod = 'slug'
+        confidence = 0.6 // Slug match is 60% confidence
+      }
+    }
+    
+    matches.push({
+      marketing,
+      dbResort: dbResort || undefined,
+      matchMethod,
+      confidence
+    })
+    
+    const statusIcon = dbResort ? '✅' : '❌'
+    loggerHelper.log('info', `${statusIcon} ${marketing.name} - Match: ${matchMethod} (${Math.round(confidence * 100)}%) ${dbResort ? `(DB ID: ${(dbResort as { id?: number }).id})` : '(No match)'}`)
+  }
+  
+  const matchedCount = matches.filter(m => m.dbResort).length
+  loggerHelper.log('success', `🔗 Matching completed: ${matchedCount}/${marketingResorts.length} resorts matched`)
+  
+  return matches
+}
+
+// Main function to sync marketing data
+export const syncMarketingData = async (): Promise<SyncResult> => {
+  try {
+    loggerHelper.setStep('Syncing Marketing Data')
+    loggerHelper.log('info', '🎯 Starting marketing data sync...')
+    
+    const authenticated = await ensureAuthenticated()
+    if (!authenticated) {
+      throw new Error('Authentication failed')
+    }
+    
+    // Step 1: Get all marketing resorts
+    const marketingResorts = await getMarketingResorts()
+    
+    // Step 2: Get detailed information for each resort
+    loggerHelper.log('info', '📋 Fetching detailed resort information...')
+    const detailedResorts: (MarketingResort & { heroImage?: string, galleryImages?: string[], additionalInfo?: Record<string, unknown> })[] = []
+    
+
+    // ignore the error here
+    // @ts-expect-error - allConcurrent is not a method of PromiseConstructor
+    await Promise.allConcurrent(2)(marketingResorts.map(resort => async () => {
+      const detailed = await getResortDetails(resort)
+      detailedResorts.push(detailed)
+      await delay(1000) // 1 second delay between detail requests
+    }))
+    
+    // Step 3: Match with database resorts
+    const matches = await matchMarketingWithDatabase(detailedResorts)
+    
+    // Step 4: Store marketing data in database
+    loggerHelper.log('info', '💾 Storing marketing data in database...')
+    let storedCount = 0
+    
+    for (const match of matches) {
+      const detailedMarketing = match.marketing as MarketingResort & { 
+        heroImage?: string, 
+        galleryImages?: string[],
+        additionalInfo?: Record<string, unknown> 
+      }
+      
+      // Create image URLs array including both the initial image and gallery images
+      const imageUrls: string[] = []
+      if (detailedMarketing.imageUrl) {
+        imageUrls.push(detailedMarketing.imageUrl)
+      }
+      if (detailedMarketing.galleryImages) {
+        // Add gallery images, filtering out duplicates
+        detailedMarketing.galleryImages.forEach(img => {
+          if (!imageUrls.includes(img)) {
+            imageUrls.push(img)
+          }
+        })
+      }
+      
+      const marketingData: dbMarketingResorts.MarketingResort = {
+        name: detailedMarketing.name,
+        url: detailedMarketing.url,
+        image_urls: imageUrls.length > 0 ? imageUrls : undefined,
+        hero_image_url: detailedMarketing.heroImage || undefined,
+        excerpt: detailedMarketing.excerpt || undefined,
+        resort_id: detailedMarketing.resortId || undefined,
+        slug: detailedMarketing.slug || undefined,
+        matched_resort_id: detailedMarketing.resortId ? parseInt(detailedMarketing.resortId) : undefined,
+        match_method: match.matchMethod,
+        match_confidence: match.confidence,
+        meta_description: detailedMarketing.additionalInfo?.metaDescription as string || undefined,
+        og_title: detailedMarketing.additionalInfo?.ogTitle as string || undefined,
+        og_description: detailedMarketing.additionalInfo?.ogDescription as string || undefined,
+        additional_info: detailedMarketing.additionalInfo || undefined
+      }
+      
+      const success = await dbMarketingResorts.store(marketingData)
+      if (success) {
+        storedCount++
+      }
+    }
+    
+    const matchedCount = matches.filter(m => m.dbResort).length
+    
+    loggerHelper.log('success', `✅ Marketing sync completed: ${detailedResorts.length} resorts processed, ${matchedCount} matched, ${storedCount} stored`)
+    
+    return {
+      success: true,
+      message: 'Marketing data sync completed successfully',
+      data: {
+        totalResorts: detailedResorts.length,
+        storedResorts: storedCount,
+        matchedResorts: matchedCount,
+        processedResorts: detailedResorts.length
+      }
+    }
+    
+  } catch (error) {
+    loggerHelper.log('error', '❌ Marketing sync failed', error)
     throw error
   }
 }
@@ -423,9 +809,11 @@ const getResortsByLocation = async (location: Location, security: string): Promi
 }
 
 // Get all resorts from all locations and store them immediately
+ 
 const getAllResorts = async (locations: Record<string, Location>, security: string): Promise<number> => {
   loggerHelper.log('info', '🏨 Fetching and storing resorts from all locations...')
 
+  // @ts-expect-error - allConcurrent is not a method of PromiseConstructor
   const results = await Promise.allConcurrent(1)(Object.keys(locations).map(locationId => async () => {
     const location = locations[locationId]
     loggerHelper.log('info', 'getResortsByLocation ' + locationId)
@@ -433,7 +821,7 @@ const getAllResorts = async (locations: Record<string, Location>, security: stri
   }))
 
   // Sum up all stored counts
-  const totalStored = results.reduce((sum, count) => sum + count, 0)
+  const totalStored = results.reduce((sum: number, count: number) => sum + count, 0)
 
   loggerHelper.log('success', `✅ Stored ${totalStored} resorts`)
   return totalStored
@@ -618,6 +1006,7 @@ const getAvailabilityOnly = async (resort: ScraperResort, security: string): Pro
 
   let totalAvailabilities = 0
 
+  // @ts-expect-error - allConcurrent is not a method of PromiseConstructor
   await Promise.allConcurrent(1)(rooms.map(room => async () => {
     const availabilityQ1 = await getAvailabilityByRoom(resort, room, 0, 8, security)
     const availabilityQ2 = await getAvailabilityByRoom(resort, room, 8, 16, security)
@@ -726,6 +1115,7 @@ interface SyncResult {
     processedResorts?: number
     totalRooms?: number
     totalAvailabilities?: number
+    matchedResorts?: number
   }
 }
 
@@ -741,9 +1131,10 @@ export const syncResorts = async (): Promise<SyncResult> => {
     }
     const security = await getSecurity()
     const locations = await getLocations()
+    // await syncMarketingData()
     const storedResorts = await getAllResorts(locations, security)
 
-    loggerHelper.log('success', `✅ Resort sync completed: ${storedResorts} resorts stored`)
+    loggerHelper.log('success', `✅ Resort sync completed (marketing data only)`)
     
     return {
       success: true,
@@ -778,6 +1169,7 @@ export const syncRooms = async (): Promise<SyncResult> => {
     let processedResorts = 0
     let totalRooms = 0
 
+    // @ts-expect-error - allConcurrent is not a method of PromiseConstructor
     await Promise.allConcurrent(1)(resorts.map(resort => async () => {
       processedResorts++
       loggerHelper.log('info', `Getting resort #${processedResorts}: ${resort.name || resort.id}`)
@@ -827,6 +1219,7 @@ export const syncAvailabilities = async (): Promise<SyncResult> => {
     let processedResorts = 0
     let totalAvailabilities = 0
 
+    // @ts-expect-error - allConcurrent is not a method of PromiseConstructor
     await Promise.allConcurrent(1)(resorts.map(resort => async () => {
       processedResorts++
       loggerHelper.log('info', `Getting availability for resort #${processedResorts}: ${resort.name || resort.id}`)
