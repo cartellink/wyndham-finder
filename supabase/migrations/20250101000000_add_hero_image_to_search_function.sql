@@ -13,6 +13,7 @@ CREATE OR REPLACE FUNCTION get_filtered_rooms(
     max_credits INT DEFAULT NULL
 )
 RETURNS TABLE (
+    resort_id INT,
     room_id INT,
     room_name TEXT,
     resort_name TEXT,
@@ -54,6 +55,7 @@ date_groups AS (
 )
 
 SELECT 
+    rs.id AS resort_id,
     r.id AS room_id,
     r.name AS room_name,
     rs.name AS resort_name,
@@ -69,7 +71,7 @@ SELECT
 FROM rooms r
 JOIN resorts rs ON r.resort_id = rs.id
 LEFT JOIN regions reg ON rs.region_id = reg.id
-LEFT JOIN marketing_resorts mr ON rs.id = mr.resort_id
+LEFT JOIN marketing_resorts mr ON rs.id = mr.matched_resort_id
 JOIN date_groups dg ON r.id = dg.room_id
 WHERE (get_filtered_rooms.region_id IS NULL OR 
        EXISTS (

@@ -246,6 +246,7 @@ export default function ResultsClient({ regions }: { regions: Region[] }) {
     const resortKey = result.resort_name;
     if (!acc[resortKey]) {
       acc[resortKey] = {
+        id: result.resort_id,
         resort_name: result.resort_name,
         region_name: result.region_name,
         country: result.country,
@@ -388,6 +389,7 @@ export default function ResultsClient({ regions }: { regions: Region[] }) {
                         key={`${monthGroup.month}-${resort.resort_name}-${index}`}
                         resort={resort}
                         isExpanded={isExpandedView}
+                        viewMode={viewMode}
                       />
                     ))}
                   </div>

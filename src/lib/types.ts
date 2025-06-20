@@ -1,4 +1,5 @@
 export interface SearchResult {
+  resort_id: number;
   room_id: number;
   room_name: string;
   resort_name: string;
@@ -28,6 +29,7 @@ export interface RoomInfo {
 }
 
 export interface ResortData {
+  id: number;
   resort_name: string;
   region_name: string;
   country: string;
