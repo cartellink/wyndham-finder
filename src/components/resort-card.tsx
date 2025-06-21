@@ -67,9 +67,9 @@ export const ResortCard = ({ resort, isExpanded = false, viewMode = "grid" }: Re
     return (
       <Card className="overflow-hidden p-0">
         <div className="flex">
-          {/* Image on the left - fills to edge */}
+          {/* Image on the left - fills to edge, hidden on mobile */}
           <div 
-            className="w-40 h-28 bg-gradient-to-br from-blue-400 to-purple-500 relative bg-cover bg-center flex-shrink-0"
+            className="hidden md:block w-40 h-28 bg-gradient-to-br from-blue-400 to-purple-500 relative bg-cover bg-center flex-shrink-0"
             style={{
               backgroundImage: resort.hero_image_url 
                 ? `url(${resort.hero_image_url})` 
@@ -165,7 +165,7 @@ export const ResortCard = ({ resort, isExpanded = false, viewMode = "grid" }: Re
   return (
     <Card className="overflow-hidden flex flex-col">
       <div 
-        className="h-48 bg-gradient-to-br from-blue-400 to-purple-500 relative bg-cover bg-center"
+        className="hidden md:block h-48 bg-gradient-to-br from-blue-400 to-purple-500 relative bg-cover bg-center"
         style={{
           backgroundImage: resort.hero_image_url 
             ? `url(${resort.hero_image_url})` 
@@ -184,6 +184,18 @@ export const ResortCard = ({ resort, isExpanded = false, viewMode = "grid" }: Re
         </div>
       </div>
       <CardContent className="p-6 flex-1">
+        {/* Mobile header - only shown when image is hidden */}
+        <div className="md:hidden mb-4">
+          <h3 className="font-semibold text-lg text-gray-900 mb-1">
+            {resort.resort_name}
+          </h3>
+          <div className="flex items-center text-gray-600 text-sm">
+            <MapPin className="mr-1 h-4 w-4" />
+            {resort.state && `${resort.state}, `}
+            {resort.country}
+          </div>
+        </div>
+        
         {isExpanded ? (
           <ExpandedView />
         ) : (
