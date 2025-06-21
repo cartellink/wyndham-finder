@@ -186,7 +186,7 @@ export default function ResultsClient({ regions }: { regions: Region[] }) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [viewMode, setViewMode] = useState<"grid" | "list">("list");
   const [isExpandedView, setIsExpandedView] = useState(false);
 
   useEffect(() => {
@@ -379,34 +379,18 @@ export default function ResultsClient({ regions }: { regions: Region[] }) {
               {monthGroups.map((monthGroup) => (
                 <div key={monthGroup.month}>
                   <h2 className="text-2xl font-bold text-gray-900 mb-6">{monthGroup.monthDisplay}</h2>
-                  <div>
-                    {/* Mobile: Always list view */}
-                    <div className="md:hidden space-y-6">
-                      {monthGroup.resorts.map((resort, index) => (
-                        <ResortCard
-                          key={`${monthGroup.month}-${resort.resort_name}-${index}-mobile`}
-                          resort={resort}
-                          isExpanded={isExpandedView}
-                          viewMode="list"
-                        />
-                      ))}
-                    </div>
-                    {/* Desktop: User-selected view mode */}
-                    <div className={cn(
-                      "hidden md:block",
-                      viewMode === "grid"
-                        ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
-                        : "space-y-6"
-                    )}>
-                      {monthGroup.resorts.map((resort, index) => (
-                        <ResortCard
-                          key={`${monthGroup.month}-${resort.resort_name}-${index}-desktop`}
-                          resort={resort}
-                          isExpanded={isExpandedView}
-                          viewMode={viewMode}
-                        />
-                      ))}
-                    </div>
+                  <div className={cn(
+                    "space-y-6", // Mobile: always list view
+                    viewMode === "grid" && "md:space-y-0 md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-6"
+                  )}>
+                    {monthGroup.resorts.map((resort, index) => (
+                      <ResortCard
+                        key={`${monthGroup.month}-${resort.resort_name}-${index}`}
+                        resort={resort}
+                        isExpanded={isExpandedView}
+                        viewMode={viewMode}
+                      />
+                    ))}
                   </div>
                 </div>
               ))}

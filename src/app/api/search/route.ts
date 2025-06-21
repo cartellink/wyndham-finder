@@ -28,7 +28,6 @@ export async function GET(request: NextRequest) {
       guest_min: guestMin ? parseInt(guestMin) : 1,
       max_credits: maxCredits ? parseInt(maxCredits) : null
     })
-    console.log(data)
 
     if (error) {
       console.error('Database error:', error)
