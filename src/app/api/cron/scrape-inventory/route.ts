@@ -10,11 +10,46 @@ export async function GET(request: Request) {
 
     console.log('🕒 Starting Wyndham inventory scraping job...')
     
-    // Import and run the actual scraping function
-    const { scrapeWyndhamInventory } = await import('@/lib/scraper/wyndham-scraper')
-    const scrapeResult = await scrapeWyndhamInventory()
+    // Import and run the individual scraping functions
+    const { syncResorts, syncRooms, syncAvailabilities } = await import('@/lib/scraper/wyndham-scraper')
     
-    console.log('✅ Scraping completed:', scrapeResult)
+    const results = {
+      resorts: null as unknown,
+      rooms: null as unknown,
+      availabilities: null as unknown,
+      executed_at: new Date().toISOString()
+    }
+    
+    // Run all scraping functions sequentially
+    try {
+      console.log('🏨 Running resort sync...')
+      results.resorts = await syncResorts()
+      console.log('✅ Resort sync completed')
+    } catch (error) {
+      console.error('❌ Resort sync failed:', error)
+      results.resorts = { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
+    
+    try {
+      console.log('🏠 Running rooms sync...')
+      results.rooms = await syncRooms()
+      console.log('✅ Rooms sync completed')
+    } catch (error) {
+      console.error('❌ Rooms sync failed:', error)
+      results.rooms = { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
+    
+    try {
+      console.log('📅 Running availabilities sync...')
+      results.availabilities = await syncAvailabilities()
+      console.log('✅ Availabilities sync completed')
+    } catch (error) {
+      console.error('❌ Availabilities sync failed:', error)
+      results.availabilities = { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
+    
+    const scrapeResult = results
+    console.log('✅ All scraping completed:', scrapeResult)
     
     return NextResponse.json({
       success: true,
@@ -41,10 +76,45 @@ export async function POST() {
   try {
     console.log('🔄 Manual scraping triggered from dashboard')
     
-    // Import and run the scraping function (now with built-in monitoring)
-    const { scrapeWyndhamInventory } = await import('@/lib/scraper/wyndham-scraper')
-    const scrapeResult = await scrapeWyndhamInventory()
+    // Import and run the individual scraping functions
+    const { syncResorts, syncRooms, syncAvailabilities } = await import('@/lib/scraper/wyndham-scraper')
     
+    const results = {
+      resorts: null as unknown,
+      rooms: null as unknown,
+      availabilities: null as unknown,
+      executed_at: new Date().toISOString()
+    }
+    
+    // Run all scraping functions sequentially
+    try {
+      console.log('🏨 Running resort sync...')
+      results.resorts = await syncResorts()
+      console.log('✅ Resort sync completed')
+    } catch (error) {
+      console.error('❌ Resort sync failed:', error)
+      results.resorts = { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
+    
+    try {
+      console.log('🏠 Running rooms sync...')
+      results.rooms = await syncRooms()
+      console.log('✅ Rooms sync completed')
+    } catch (error) {
+      console.error('❌ Rooms sync failed:', error)
+      results.rooms = { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
+    
+    try {
+      console.log('📅 Running availabilities sync...')
+      results.availabilities = await syncAvailabilities()
+      console.log('✅ Availabilities sync completed')
+    } catch (error) {
+      console.error('❌ Availabilities sync failed:', error)
+      results.availabilities = { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
+    
+    const scrapeResult = results
     console.log('✅ Manual scraping completed:', scrapeResult)
     
     return NextResponse.json({
