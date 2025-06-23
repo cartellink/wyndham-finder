@@ -16,7 +16,9 @@
     "supabase:reset": "supabase db reset",
     "scrape:test": "curl -X POST http://localhost:3000/api/cron/scrape-inventory",
     "sync:resorts": "curl -X POST http://localhost:3000/api/cron/sync-resorts",
-    "sync:rooms": "curl -X POST http://localhost:3000/api/cron/sync-rooms"
+    "sync:rooms": "curl -X POST http://localhost:3000/api/cron/sync-rooms",
+    "sync:availabilities": "curl -X POST http://localhost:3000/api/cron/sync-availabilities",
+    "sync:availabilities:prod": "dotenv -e .env.local -- ./scripts/sync-availabilities.sh"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

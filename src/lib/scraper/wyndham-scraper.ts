@@ -60,7 +60,7 @@ import axios, { AxiosInstance } from 'axios'
 import { CookieJar } from 'tough-cookie'
 import { wrapper } from 'axios-cookiejar-support'
 
-import { logger } from '../logger'
+import { logger, loggerHelper } from '../logger'
 import * as dbResorts from '../models/resorts'
 import * as dbRooms from '../models/rooms'  
 import * as dbAvailabilities from '../models/availabilities'
@@ -76,51 +76,21 @@ const client: AxiosInstance = wrapper(axios.create({ jar, timeout: 30000 }))
 
 const baseUrl = 'http://clubwyndhamsp.com'
 
-// Monitoring helper
-// Simple logging helper to replace monitor
-const loggerHelper = {
-  log: (level: 'info' | 'error' | 'success' | 'warning', message: string, details?: unknown) => {
-    const loggerMethod = level === 'success' ? 'info' : level === 'warning' ? 'warn' : level
-    logger[loggerMethod](message, details)
-  },
-  
-  logApiCall: (url: string, method: string, status: number, duration: number, payload?: unknown, response?: unknown) => {
-    // Parameters payload and response are available for future debugging but not currently used
-    void payload
-    void response
-    if (status >= 200 && status < 400) {
-      logger.info(`API call: ${method} ${url} - ${status} (${duration}ms)`)
-    } else {
-      logger.error(`API call failed: ${method} ${url} - ${status} (${duration}ms)`)
-    }
-  },
-  
-  setStep: (step: string) => {
-    logger.info(`Step: ${step}`)
-  },
-  
-  setRunning: (isRunning: boolean) => {
-    logger.info(`Scraping ${isRunning ? 'started' : 'stopped'}`)
-  },
-  
-  updateProgress: (type: 'resorts' | 'rooms' | 'availability', processed: number, total: number) => {
-    logger.info(`Progress - ${type}: ${processed}/${total}`)
-  }
-}
+// Using centralized loggerHelper from logger.ts
 
 // Make API calls to Club Wyndham with monitoring and session recovery
 const callApi = async (payload: Record<string, unknown>, retryCount: number = 0): Promise<unknown> => {
   const url = 'https://clubwyndhamsp.com/wp-admin/admin-ajax.php'
   const startTime = Date.now()
   
-  try {
-    loggerHelper.log('info', 'callApi start')
-    
-    // Extract sensitive data for logging purposes, but don't log them
-    const { memberid, password, ...rest } = payload
-    void memberid // Suppress unused variable warning
-    void password // Suppress unused variable warning
-          loggerHelper.log('info', JSON.stringify(rest, null, 2))
+      try {
+      loggerHelper.debug('callApi start')
+      
+      // Extract sensitive data for logging purposes, but don't log them
+      const { memberid, password, ...rest } = payload
+      void memberid // Suppress unused variable warning
+      void password // Suppress unused variable warning
+      loggerHelper.debug('API payload', rest)
     
     // Use form data directly like the request-promise example
     const response = await client.post(url, payload, {
@@ -162,7 +132,7 @@ const callApi = async (payload: Record<string, unknown>, retryCount: number = 0)
     // Log full response data for better debugging
     loggerHelper.logApiCall(url, 'POST', response.status, duration, rest, 'Success')
 
-    loggerHelper.log('info', 'callApi end')
+    loggerHelper.debug('callApi end')
     return response.data
     
   } catch (error) {
@@ -197,7 +167,7 @@ const isAuthenticated = async (): Promise<boolean> => {
   const startTime = Date.now()
   
   try {
-    loggerHelper.log('info', '🔍 Checking authentication status...')
+    loggerHelper.debug('Checking authentication status...')
     
     const response = await client.get(url)
     const duration = Date.now() - startTime
@@ -298,7 +268,7 @@ const ensureAuthenticated = async (): Promise<boolean> => {
         }
         
         if (phpSessionId) {
-          loggerHelper.log('info', `🍪 Found PHPSESSID in database: ${phpSessionId.substring(0, 8)}...`)
+          loggerHelper.debug(`Found PHPSESSID in database: ${phpSessionId.substring(0, 8)}...`)
           
           // Set the PHPSESSID directly on our cookie jar
           const manualCookie = `PHPSESSID=${phpSessionId}; Path=/; Domain=clubwyndhamsp.com`
@@ -387,7 +357,7 @@ const getLocations = async (): Promise<Record<string, Location>> => {
             countryCode,
             areaName
           }
-          loggerHelper.log('info', `Parsed location: ${regionCode}-${countryCode} ${areaName} (ID: ${id})`)
+          loggerHelper.debug(`Parsed location: ${regionCode}-${countryCode} ${areaName} (ID: ${id})`)
         } else {
           loggerHelper.log('warning', `Failed to parse location text: "${text}" (ID: ${id})`)
         }
@@ -398,7 +368,7 @@ const getLocations = async (): Promise<Record<string, Location>> => {
     
     // Log a sample of parsed locations for debugging
     const sampleLocations = Object.values(locations).slice(0, 5)
-    loggerHelper.log('info', `Sample locations:`, sampleLocations)
+    loggerHelper.debug('Sample locations', sampleLocations)
     
     return locations
   } catch (error) {
@@ -506,7 +476,7 @@ const getMarketingResorts = async (): Promise<MarketingResort[]> => {
 
 // Scrape detailed resort page for additional information
 const getResortDetails = async (resort: MarketingResort): Promise<MarketingResort & { heroImage?: string, galleryImages?: string[], additionalInfo?: Record<string, unknown> }> => {
-  loggerHelper.log('info', `🔍 Fetching details for: ${resort.name}`)
+  loggerHelper.debug(`Fetching details for: ${resort.name}`)
   
   try {
     const response = await client.get(resort.url)
@@ -566,7 +536,7 @@ const getResortDetails = async (resort: MarketingResort): Promise<MarketingResor
       ogDescription: $('meta[property="og:description"]').attr('content') || ''
     }
     
-    loggerHelper.log('info', `✅ Details extracted for: ${resort.name}${heroImage ? ' (with hero image)' : ''}${uniqueGalleryImages.length > 0 ? ` (${uniqueGalleryImages.length} gallery images)` : ''}`)
+    loggerHelper.debug(`Details extracted for: ${resort.name}${heroImage ? ' (with hero image)' : ''}${uniqueGalleryImages.length > 0 ? ` (${uniqueGalleryImages.length} gallery images)` : ''}`)
     
     return {
       ...resort,
@@ -648,7 +618,7 @@ const matchMarketingWithDatabase = async (marketingResorts: MarketingResort[]) =
     })
     
     const statusIcon = dbResort ? '✅' : '❌'
-    loggerHelper.log('info', `${statusIcon} ${marketing.name} - Match: ${matchMethod} (${Math.round(confidence * 100)}%) ${dbResort ? `(DB ID: ${(dbResort as { id?: number }).id})` : '(No match)'}`)
+    loggerHelper.debug(`${statusIcon} ${marketing.name} - Match: ${matchMethod} (${Math.round(confidence * 100)}%) ${dbResort ? `(DB ID: ${(dbResort as { id?: number }).id})` : '(No match)'}`)
   }
   
   const matchedCount = matches.filter(m => m.dbResort).length
@@ -798,7 +768,7 @@ const getResortsByLocation = async (location: Location, security: string): Promi
     const success = await dbResorts.store(normalizedResort)
     if (success) {
       storedCount++
-      loggerHelper.log('info', `Stored resort: ${normalizedResort.name || normalizedResort.id} with region_id: ${regionId}`)
+      loggerHelper.debug(`Stored resort: ${normalizedResort.name || normalizedResort.id} with region_id: ${regionId}`)
     } else {
       loggerHelper.log('error', `Failed to store resort: ${normalizedResort.name || normalizedResort.id}`)
     }
@@ -815,7 +785,7 @@ const getAllResorts = async (locations: Record<string, Location>, security: stri
   // @ts-expect-error - allConcurrent is not a method of PromiseConstructor
   const results = await Promise.allConcurrent(1)(Object.keys(locations).map(locationId => async () => {
     const location = locations[locationId]
-    loggerHelper.log('info', 'getResortsByLocation ' + locationId)
+    loggerHelper.debug('getResortsByLocation ' + locationId)
     return getResortsByLocation(location, security)
   }))
 
@@ -844,7 +814,7 @@ const getRoomsAndStore = async (resort: ScraperResort, security: string): Promis
       resort_id: resort.id
     }
     await dbRooms.store(roomWithResort)
-    loggerHelper.log('info', `Stored room ${room.id} for resort ${resort.id}`)
+    loggerHelper.debug(`Stored room ${room.id} for resort ${resort.id}`)
   }
 
   return rooms
@@ -864,7 +834,7 @@ const getAvailabilityByRoom = async (
   monthEnd: number, 
   security: string
 ): Promise<Availability> => {
-  console.log('region id', resort)
+  loggerHelper.debug('region id', resort)
   const payload = {
     action: 'get_four_months_availability',
     iris_resort: resort.id,
@@ -883,10 +853,10 @@ const getAvailabilityByRoom = async (
    
   // For now, let's force the fallback to test the HTML parsing
   const shouldUseFallback = true
-  loggerHelper.log('info', '🔧 FORCING HTML FALLBACK FOR TESTING')
+  loggerHelper.debug('FORCING HTML FALLBACK FOR TESTING')
 
   if (shouldUseFallback) {
-    loggerHelper.log('info', 'getAvailabilityByRoom-fallback start')
+    loggerHelper.debug('getAvailabilityByRoom-fallback start')
     // Build URL with proper parameters to get the specific room/resort calendar
     const url = `https://clubwyndhamsp.com/book-now-new-with-calendar/`
     const startTime = Date.now()
@@ -901,7 +871,7 @@ const getAvailabilityByRoom = async (
       // DEBUG: Log the number of script tags found
       const allScripts = $('script')
       const calendarScripts = $('.calendars script')
-      loggerHelper.log('info', `🔍 DEBUG: Found ${allScripts.length} total script tags, ${calendarScripts.length} within .calendars`)
+      loggerHelper.debug(`Found ${allScripts.length} total script tags, ${calendarScripts.length} within .calendars`)
 
       // Try both .calendars script and all script tags since the structure might vary
       const scriptSelectors = ['.calendars script', 'script']
@@ -919,8 +889,8 @@ const getAvailabilityByRoom = async (
             return
           }
 
-          loggerHelper.log('info', `🔍 DEBUG: Processing script ${key + 1} with selector "${selector}"`)
-          loggerHelper.log('info', `🔍 DEBUG: Script content preview: ${scriptContent.substring(0, 200)}...`)
+          loggerHelper.debug(`Processing script ${key + 1} with selector "${selector}"`)
+          loggerHelper.debug(`Script content preview: ${scriptContent.substring(0, 200)}...`)
 
           // Regular expressions to find the arrays - match the actual format from the HTML
           const monthArrayRegex = /var monthArray(\d+) = (\[[^\]]+\]);/g
@@ -928,24 +898,24 @@ const getAvailabilityByRoom = async (
 
           let match
           while ((match = monthArrayRegex.exec(scriptContent)) !== null) {
-            loggerHelper.log('info', `🔍 DEBUG: Found monthArray${match[1]}: ${match[2]}`)
+            loggerHelper.debug(`Found monthArray${match[1]}: ${match[2]}`)
             try {
               const monthArray = JSON.parse(match[2]) as string[]
               monthTotalArray = [...monthTotalArray, ...monthArray]
               foundArrays = true
-              loggerHelper.log('info', `🔍 DEBUG: Successfully parsed monthArray${match[1]} with ${monthArray.length} items`)
+              loggerHelper.debug(`Successfully parsed monthArray${match[1]} with ${monthArray.length} items`)
             } catch (parseError) {
               loggerHelper.log('error', `Failed to parse monthArray${match[1]}:`, parseError)
             }
           }
 
           while ((match = monthPointArrayRegex.exec(scriptContent)) !== null) {
-            loggerHelper.log('info', `🔍 DEBUG: Found monthPointArray${match[1]}: ${match[2]}`)
+            loggerHelper.debug(`Found monthPointArray${match[1]}: ${match[2]}`)
             try {
               const monthPointArray = JSON.parse(match[2]) as string[]
               monthTotalPointsArray = [...monthTotalPointsArray, ...monthPointArray]
               foundArrays = true
-              loggerHelper.log('info', `🔍 DEBUG: Successfully parsed monthPointArray${match[1]} with ${monthPointArray.length} items`)
+              loggerHelper.debug(`Successfully parsed monthPointArray${match[1]} with ${monthPointArray.length} items`)
             } catch (parseError) {
               loggerHelper.log('error', `Failed to parse monthPointArray${match[1]}:`, parseError)
             }
@@ -953,9 +923,9 @@ const getAvailabilityByRoom = async (
         })
       }
 
-      loggerHelper.log('info', `🔍 DEBUG: Final arrays - Availability: ${monthTotalArray.length} items, Points: ${monthTotalPointsArray.length} items`)
-      loggerHelper.log('info', `🔍 DEBUG: Sample availability values: ${monthTotalArray.slice(0, 10)}`)
-      loggerHelper.log('info', `🔍 DEBUG: Sample point values: ${monthTotalPointsArray.slice(0, 10)}`)
+      loggerHelper.debug(`Final arrays - Availability: ${monthTotalArray.length} items, Points: ${monthTotalPointsArray.length} items`)
+      loggerHelper.debug(`Sample availability values: ${monthTotalArray.slice(0, 10)}`)
+      loggerHelper.debug(`Sample point values: ${monthTotalPointsArray.slice(0, 10)}`)
 
     } catch (error) {
       const duration = Date.now() - startTime
@@ -964,7 +934,7 @@ const getAvailabilityByRoom = async (
       throw error
     }
 
-    loggerHelper.log('info', 'getAvailabilityByRoom-fallback end')
+    loggerHelper.debug('getAvailabilityByRoom-fallback end')
   }
 
   // Calculate date range
@@ -1010,7 +980,7 @@ const getAvailabilityOnly = async (resort: ScraperResort, security: string): Pro
     const availabilityQ1 = await getAvailabilityByRoom(resort, room, 0, 8, security)
     const availabilityQ2 = await getAvailabilityByRoom(resort, room, 8, 16, security)
     
-    logger.info(`Availability dates: ${availabilityQ1.ToDate} - ${availabilityQ2.ToDate}`)
+    logger.info(`Availability dates: ${availabilityQ1.FromDate} - ${availabilityQ2.ToDate}`)
     
     // Combine the two availability periods
     const combinedAvailability: Availability = {
@@ -1050,7 +1020,7 @@ const getAvailabilityOnly = async (resort: ScraperResort, security: string): Pro
 // Normalize availability data for database storage
 const normalizeAvailabilityData = (availability: Availability, roomId: number): AvailabilityRecord[] => {
   // DEBUG: Print the input availability data
-  loggerHelper.log('info', '🔍 DEBUG: Input availability data for normalization:', {
+  loggerHelper.debug('Input availability data for normalization:', {
     roomId,
     availability: {
       FromDate: availability.FromDate,
@@ -1086,7 +1056,7 @@ const normalizeAvailabilityData = (availability: Availability, roomId: number): 
 
     // DEBUG: Print first record for inspection
     if (normalizedData.length === 1) {
-      loggerHelper.log('info', '🔍 DEBUG: First normalized record sample:', {
+      loggerHelper.debug('First normalized record sample:', {
         record,
         rawAvailValue: roomData.AvailArray[index],
         rawPointValue: roomData.PointArray[index],
@@ -1097,7 +1067,7 @@ const normalizeAvailabilityData = (availability: Availability, roomId: number): 
   }
 
   // DEBUG: Print summary of normalized data
-  loggerHelper.log('info', '🔍 DEBUG: Normalized data summary:', {
+  loggerHelper.debug('Normalized data summary:', {
     totalRecords: normalizedData.length,
     firstRecord: normalizedData[0],
     lastRecord: normalizedData[normalizedData.length - 1]

@@ -12,11 +12,10 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
-import { Search, MapPin, CalendarIcon, Users, Check } from "lucide-react"
+import { Search, MapPin, CalendarIcon, Users, Check, Clock } from "lucide-react"
 import { useState } from "react"
 import { DateRange } from "react-day-picker"
 import { cn } from "@/lib/utils"
-import { Slider } from "@/components/ui/slider"
 import { useRouter } from "next/navigation"
 
 export function HomeClient({
@@ -28,12 +27,13 @@ export function HomeClient({
   const [date, setDate] = useState<DateRange | undefined>()
   const [guests, setGuests] = useState(2)
   const [location, setLocation] = useState("")
-  const [credits, setCredits] = useState([5000])
-  const [stayLength, setStayLength] = useState([3, 7])
+  const [stayMin, setStayMin] = useState(3)
+  const [stayMax, setStayMax] = useState(7)
 
   const [whereOpen, setWhereOpen] = useState(false)
   const [dateOpen, setDateOpen] = useState(false)
   const [guestsOpen, setGuestsOpen] = useState(false)
+  const [stayOpen, setStayOpen] = useState(false)
 
   const handleSearch = () => {
     if (!date?.from || !date?.to) {
@@ -45,10 +45,10 @@ export function HomeClient({
       region_id: location || "",
       date_start: date.from.toISOString().split('T')[0],
       date_end: date.to.toISOString().split('T')[0],
-      stay_min: stayLength[0].toString(),
-      stay_max: stayLength[1].toString(),
+      stay_min: stayMin.toString(),
+      stay_max: stayMax.toString(),
       guest_min: guests.toString(),
-      max_credits: credits[0].toString(),
+      max_credits: "50000", // Default to 50k credits
     })
 
     router.push(`/results?${searchParams.toString()}`)
@@ -151,70 +151,100 @@ export function HomeClient({
                       </span>
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
+                  <PopoverContent className="w-auto p-0 max-w-[95vw]" align="start">
                     <Calendar
                       mode="range"
                       selected={date}
                       onSelect={setDate}
-                      numberOfMonths={2}
+                      numberOfMonths={1}
+                      className="rounded-md"
                     />
                   </PopoverContent>
                 </Popover>
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-700">For a stay of</label>
-                <div className="pt-2">
-                  <Slider
-                    defaultValue={stayLength}
-                    onValueChange={setStayLength}
-                    max={14}
-                    min={1}
-                    step={1}
-                    className="w-full"
-                  />
-                </div>
-                <div className="flex justify-between text-sm text-gray-500">
-                  <span>{stayLength[0]} days</span>
-                  <span>{stayLength[1]} days</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Guests</label>
-                  <Popover open={guestsOpen} onOpenChange={setGuestsOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" className="w-full justify-start text-left font-normal">
-                        <Users className="mr-2 h-4 w-4 text-gray-400" />
-                        <span className="text-gray-500">{guests} Guests</span>
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-52" align="start">
+                <label className="text-sm font-medium text-gray-700">Stay length</label>
+                <Popover open={stayOpen} onOpenChange={setStayOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full justify-start text-left font-normal">
+                      <Clock className="mr-2 h-4 w-4 text-gray-400" />
+                      <span className="text-gray-500">
+                        {stayMin === stayMax ? `${stayMin} days` : `${stayMin}-${stayMax} days`}
+                      </span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-72" align="start">
+                    <div className="space-y-4">
                       <div className="flex items-center justify-between">
-                        <div className="font-medium">Guests</div>
+                        <div className="font-medium">Minimum stay</div>
                         <div className="flex items-center gap-2">
-                          <Button variant="outline" size="icon" className="h-8 w-8 rounded-full" onClick={() => setGuests(Math.max(1, guests - 1))}>-</Button>
-                          <span className="w-8 text-center">{guests}</span>
-                          <Button variant="outline" size="icon" className="h-8 w-8 rounded-full" onClick={() => setGuests(guests + 1)}>+</Button>
+                          <Button 
+                            variant="outline" 
+                            size="icon" 
+                            className="h-8 w-8 rounded-full" 
+                            onClick={() => setStayMin(Math.max(1, stayMin - 1))}
+                          >
+                            -
+                          </Button>
+                          <span className="w-8 text-center">{stayMin}</span>
+                          <Button 
+                            variant="outline" 
+                            size="icon" 
+                            className="h-8 w-8 rounded-full" 
+                            onClick={() => setStayMin(Math.min(14, stayMin + 1))}
+                          >
+                            +
+                          </Button>
                         </div>
                       </div>
-                    </PopoverContent>
-                  </Popover>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">Max credits per night</label>
-                  <div className="pt-2">
-                    <Slider
-                      defaultValue={credits}
-                      onValueChange={setCredits}
-                      max={10000}
-                      step={100}
-                      className="w-full"
-                    />
-                  </div>
-                  <div className="text-right text-sm text-gray-500">{credits[0]} credits</div>
-                </div>
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium">Maximum stay</div>
+                        <div className="flex items-center gap-2">
+                          <Button 
+                            variant="outline" 
+                            size="icon" 
+                            className="h-8 w-8 rounded-full" 
+                            onClick={() => setStayMax(Math.max(stayMin, stayMax - 1))}
+                          >
+                            -
+                          </Button>
+                          <span className="w-8 text-center">{stayMax}</span>
+                          <Button 
+                            variant="outline" 
+                            size="icon" 
+                            className="h-8 w-8 rounded-full" 
+                            onClick={() => setStayMax(Math.min(14, stayMax + 1))}
+                          >
+                            +
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">Guests</label>
+                <Popover open={guestsOpen} onOpenChange={setGuestsOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="w-full justify-start text-left font-normal">
+                      <Users className="mr-2 h-4 w-4 text-gray-400" />
+                      <span className="text-gray-500">{guests} Guests</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-52" align="start">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">Guests</div>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="icon" className="h-8 w-8 rounded-full" onClick={() => setGuests(Math.max(1, guests - 1))}>-</Button>
+                        <span className="w-8 text-center">{guests}</span>
+                        <Button variant="outline" size="icon" className="h-8 w-8 rounded-full" onClick={() => setGuests(guests + 1)}>+</Button>
+                      </div>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
 
               <Button 

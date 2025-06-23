@@ -1,4 +1,5 @@
 import { supabase, convertObjectKeysToSnakeCase } from '../db'
+import { logger } from '../logger'
 
 export interface Availability {
   roomId: number
@@ -13,9 +14,10 @@ export const store = async (availability: Availability): Promise<boolean> => {
     const transformedAvailability = convertObjectKeysToSnakeCase(availability)
 
     // DEBUG: Log what we're about to store
-    console.log('🔍 DEBUG: About to store availability record:')
-    console.log('Original data:', JSON.stringify(availability, null, 2))
-    console.log('Transformed data:', JSON.stringify(transformedAvailability, null, 2))
+    logger.debug('About to store availability record:', {
+      original: availability,
+      transformed: transformedAvailability
+    })
 
     const { error } = await supabase
       .from('availabilities')
@@ -27,7 +29,7 @@ export const store = async (availability: Availability): Promise<boolean> => {
       return false
     }
 
-    console.log('🔍 DEBUG: Successfully stored availability record')
+    logger.debug('Successfully stored availability record')
     return true
   } catch (error) {
     console.error('Unexpected error:', error)
@@ -37,7 +39,7 @@ export const store = async (availability: Availability): Promise<boolean> => {
 
 export const deleteByRoomId = async (roomId: number): Promise<boolean> => {
   try {
-    console.log(`🗑️ DEBUG: Deleting all availability records for room ${roomId}`)
+    logger.debug(`Deleting all availability records for room ${roomId}`)
     
     const { error } = await supabase
       .from('availabilities')
@@ -50,7 +52,7 @@ export const deleteByRoomId = async (roomId: number): Promise<boolean> => {
       return false
     }
 
-    console.log(`✅ DEBUG: Successfully deleted availability records for room ${roomId}`)
+    logger.debug(`Successfully deleted availability records for room ${roomId}`)
     return true
   } catch (error) {
     console.error('Unexpected error:', error)

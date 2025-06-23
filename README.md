@@ -152,3 +152,44 @@ npm run scrape:test      # Test scraping endpoint
 ```
 
 Ready for you to import your existing scraping script! 🚀
+
+## Debug Configuration
+
+The scraper includes a debug mode that can be toggled on/off to control logging verbosity:
+
+### Environment Variables
+
+- `SCRAPER_DEBUG=true` - Enable debug mode with detailed logging
+- `SCRAPER_DEBUG=false` or unset - Disable debug mode (default)
+
+### Debug Mode Behavior
+
+**When Debug Mode is ON (`SCRAPER_DEBUG=true`):**
+- Shows all logs including detailed debug information
+- API call details and timing
+- Data parsing steps
+- Individual record storage confirmations
+- Raw data samples and previews
+
+**When Debug Mode is OFF (default):**
+- Shows only progress updates and errors
+- Step transitions (e.g., "Starting resort sync...")
+- Success/completion messages
+- Error messages and warnings
+- Progress counters (e.g., "Progress - resorts: 5/10")
+
+### Usage Examples
+
+```bash
+# Run with debug mode enabled
+SCRAPER_DEBUG=true npm run scrape
+
+# Run with debug mode disabled (default)
+npm run scrape
+
+# Or set in your environment
+export SCRAPER_DEBUG=true
+npm run scrape
+```
+
+This helps keep the logs clean for production use while still providing detailed debugging information when needed during development.
