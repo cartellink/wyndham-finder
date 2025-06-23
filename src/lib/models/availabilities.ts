@@ -35,6 +35,29 @@ export const store = async (availability: Availability): Promise<boolean> => {
   }
 }
 
+export const deleteByRoomId = async (roomId: number): Promise<boolean> => {
+  try {
+    console.log(`🗑️ DEBUG: Deleting all availability records for room ${roomId}`)
+    
+    const { error } = await supabase
+      .from('availabilities')
+      .delete()
+      .eq('room_id', roomId)
+
+    if (error) {
+      console.error(`Error deleting availability records for room ${roomId}:`, error)
+      console.error('Error details:', JSON.stringify(error, null, 2))
+      return false
+    }
+
+    console.log(`✅ DEBUG: Successfully deleted availability records for room ${roomId}`)
+    return true
+  } catch (error) {
+    console.error('Unexpected error:', error)
+    return false
+  }
+}
+
 export const fetch = async (roomId: number, date: string): Promise<Availability | null> => {
   try {
     const { data, error } = await supabase

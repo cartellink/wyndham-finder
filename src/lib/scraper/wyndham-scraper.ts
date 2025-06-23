@@ -67,7 +67,6 @@ import * as dbAvailabilities from '../models/availabilities'
 import * as dbMarketingResorts from '../models/marketing-resorts'
 import { mapRegionToId } from '../utils'
 import '../promiseAllConcurrent'
-import { intelligentScheduler } from './intelligent-scheduler'
 import { authSessionManager } from './auth-session-manager'
 import { supabase } from '../supabase'
 
@@ -1029,13 +1028,20 @@ const getAvailabilityOnly = async (resort: ScraperResort, security: string): Pro
       }]
     }
 
+    // Delete existing availability records for this room before storing new ones
+    loggerHelper.log('info', `🗑️ Clearing existing availability records for room ${room.id}`)
+    const deleteSuccess = await dbAvailabilities.deleteByRoomId(room.id)
+    if (!deleteSuccess) {
+      loggerHelper.log('warning', `Failed to delete existing records for room ${room.id}, continuing anyway`)
+    }
+
     // Normalize and store availability data immediately
     const normalizedAvailability = normalizeAvailabilityData(combinedAvailability, room.id)
     for (const availabilityData of normalizedAvailability) {
       await dbAvailabilities.store(availabilityData)
       totalAvailabilities++
     }
-    logger.info(`Stored ${normalizedAvailability.length} availability records for room ${room.id}`)
+    logger.info(`Replaced ${normalizedAvailability.length} availability records for room ${room.id}`)
   }))
 
   return { totalAvailabilities }
@@ -1118,6 +1124,8 @@ interface SyncResult {
     matchedResorts?: number
   }
 }
+
+
 
 // Main scraping functions
 export const syncResorts = async (): Promise<SyncResult> => {
@@ -1247,74 +1255,6 @@ export const syncAvailabilities = async (): Promise<SyncResult> => {
     }
   } catch (error) {
     loggerHelper.log('error', '❌ Availabilities sync failed', error)
-    throw error
-  }
-}
-
-// Combined scraping function with intelligent scheduling
-export const scrapeWyndhamInventory = async () => {
-  loggerHelper.setRunning(true)
-  loggerHelper.log('info', '🚀 Starting intelligent Wyndham inventory scraping...')
-  
-  try {
-    // Create scraping plan
-    const plan = await intelligentScheduler.createScrapingPlan()
-    loggerHelper.log('info', `📋 Scraping plan: ${plan.reason}`)
-    
-    let resortResult: SyncResult = { success: true, message: 'Skipped', data: { storedResorts: 0, totalResorts: 0 } }
-    let roomResult: SyncResult = { success: true, message: 'Skipped', data: { totalRooms: 0, processedResorts: 0 } }
-    let availabilityResult: SyncResult = { success: true, message: 'Skipped', data: { totalAvailabilities: 0, processedResorts: 0 } }
-    
-    // Only scrape what's needed based on frequency
-    if (plan.needsResorts) {
-      loggerHelper.log('info', '🏨 Scraping resorts (due for update)...')
-      resortResult = await syncResorts()
-      await intelligentScheduler.updateLastScrapedTime('resorts')
-    } else {
-      loggerHelper.log('info', '⏭️ Skipping resorts (not due for update)')
-    }
-    
-    if (plan.needsRooms) {
-      loggerHelper.log('info', '🏠 Scraping rooms (due for update)...')
-      roomResult = await syncRooms()
-      await intelligentScheduler.updateLastScrapedTime('rooms')
-    } else {
-      loggerHelper.log('info', '⏭️ Skipping rooms (not due for update)')
-    }
-    
-    if (plan.needsAvailabilities) {
-      loggerHelper.log('info', '📅 Scraping availabilities (due for update)...')
-      availabilityResult = await syncAvailabilities()
-      await intelligentScheduler.updateLastScrapedTime('availabilities')
-    } else {
-      loggerHelper.log('info', '⏭️ Skipping availabilities (not due for update)')
-    }
-    
-    const result = {
-      scraped_at: new Date().toISOString(),
-      resorts_updated: resortResult.data?.storedResorts || 0,
-      total_rooms_found: roomResult.data?.totalRooms || 0,
-      available_rooms: availabilityResult.data?.totalAvailabilities || 0,
-      new_availability: availabilityResult.data?.totalAvailabilities || 0,
-      processed_resorts: Math.max(
-        resortResult.data?.processedResorts || 0,
-        roomResult.data?.processedResorts || 0,
-        availabilityResult.data?.processedResorts || 0
-      ),
-      plan: plan,
-      next_scraping: await intelligentScheduler.getNextScrapingTimes()
-    }
-    
-    loggerHelper.setStep('Completed')
-    loggerHelper.log('success', '✅ Intelligent scraping completed successfully', result)
-    loggerHelper.setRunning(false)
-    
-    return result
-    
-  } catch (error) {
-    loggerHelper.setStep('Failed')
-    loggerHelper.log('error', '❌ Intelligent scraping failed', error)
-    loggerHelper.setRunning(false)
     throw error
   }
 }

@@ -20,7 +20,7 @@ export interface MarketingResort {
   additional_info?: Record<string, unknown>
   created_at?: string
   updated_at?: string
-  last_scraped_at?: string
+
 }
 
 // Store or update a marketing resort
@@ -39,8 +39,7 @@ export const store = async (marketingResort: MarketingResort): Promise<boolean> 
       result = await supabase
         .from('marketing_resorts')
         .update({
-          ...marketingResort,
-          last_scraped_at: new Date().toISOString()
+          ...marketingResort
         })
         .eq('id', existing.id)
     } else {
@@ -48,8 +47,7 @@ export const store = async (marketingResort: MarketingResort): Promise<boolean> 
       result = await supabase
         .from('marketing_resorts')
         .insert([{
-          ...marketingResort,
-          last_scraped_at: new Date().toISOString()
+          ...marketingResort
         }])
     }
 
@@ -227,35 +225,26 @@ export const getStats = async (): Promise<{
   total: number
   matched: number
   unmatched: number
-  lastScrapedAt?: string
 }> => {
   try {
-    const [totalResult, matchedResult, lastScrapedResult] = await Promise.all([
+    const [totalResult, matchedResult] = await Promise.all([
       supabase
         .from('marketing_resorts')
         .select('id', { count: 'exact', head: true }),
       supabase
         .from('marketing_resorts')
         .select('id', { count: 'exact', head: true })
-        .not('matched_resort_id', 'is', null),
-      supabase
-        .from('marketing_resorts')
-        .select('last_scraped_at')
-        .order('last_scraped_at', { ascending: false })
-        .limit(1)
-        .single()
+        .not('matched_resort_id', 'is', null)
     ])
 
     const total = totalResult.count || 0
     const matched = matchedResult.count || 0
     const unmatched = total - matched
-    const lastScrapedAt = lastScrapedResult.data?.last_scraped_at
 
     return {
       total,
       matched,
-      unmatched,
-      lastScrapedAt
+      unmatched
     }
   } catch (error) {
     logger.error('Error getting marketing resorts stats', error)
