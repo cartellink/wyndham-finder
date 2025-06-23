@@ -10,7 +10,7 @@ import { Calendar } from "@/components/ui/calendar"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Slider } from "@/components/ui/slider"
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet"
 import { MapPin, Grid, List, Search, CalendarIcon, Users, Check, Loader2, SlidersHorizontal } from "lucide-react"
 
 import { SearchResult, MonthGroup, ResortData, RoomInfo, FilterValues } from "@/lib/types"
@@ -63,12 +63,12 @@ const FilterContent = ({
   };
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-2">
+    <div className="space-y-6 p-4 md:p-0">
+      <div className="space-y-3">
         <label className="text-sm font-medium">Where</label>
         <Popover open={whereOpen} onOpenChange={setWhereOpen}>
           <PopoverTrigger asChild>
-            <Button variant="outline" role="combobox" className="w-full justify-start">
+            <Button variant="outline" role="combobox" className="w-full justify-start h-12 px-4">
               <MapPin className="mr-2 h-4 w-4" />
               {location ? regions.find((r) => r.value === location)?.label : "Select region"}
             </Button>
@@ -99,11 +99,11 @@ const FilterContent = ({
         </Popover>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         <label className="text-sm font-medium">Search between</label>
         <Popover open={dateOpen} onOpenChange={setDateOpen}>
           <PopoverTrigger asChild>
-            <Button variant="outline" className="w-full justify-start text-left font-normal">
+            <Button variant="outline" className="w-full justify-start text-left font-normal h-12 px-4">
               <CalendarIcon className="mr-2 h-4 w-4" />
               <span>
                 {date?.from ? (
@@ -120,27 +120,27 @@ const FilterContent = ({
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-0" align="start">
-            <Calendar mode="range" selected={date} onSelect={setDate} numberOfMonths={2} />
+            <Calendar mode="range" selected={date} onSelect={setDate} numberOfMonths={1} className="md:block" />
           </PopoverContent>
         </Popover>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         <label className="text-sm font-medium">For a stay of</label>
-        <div className="pt-2">
+        <div className="pt-4 px-2">
           <Slider defaultValue={stayLength} onValueChange={setStayLength} max={14} min={1} step={1} />
         </div>
-        <div className="flex justify-between text-sm">
+        <div className="flex justify-between text-sm px-2">
           <span>{stayLength[0]} days</span>
           <span>{stayLength[1]} days</span>
         </div>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         <label className="text-sm font-medium">Guests</label>
         <Popover open={guestsOpen} onOpenChange={setGuestsOpen}>
           <PopoverTrigger asChild>
-            <Button variant="outline" className="w-full justify-start text-left font-normal">
+            <Button variant="outline" className="w-full justify-start text-left font-normal h-12 px-4">
               <Users className="mr-2 h-4 w-4" />
               <span>{guests} Guests</span>
             </Button>
@@ -158,15 +158,15 @@ const FilterContent = ({
         </Popover>
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         <label className="text-sm font-medium">Max credits per night</label>
-        <div className="pt-2">
-          <Slider defaultValue={credits} onValueChange={setCredits} max={10000} step={100} />
+        <div className="pt-4 px-2">
+          <Slider defaultValue={credits} onValueChange={setCredits} max={50000} step={1000} />
         </div>
-        <div className="text-right text-sm">{credits[0]} credits</div>
+        <div className="text-right text-sm px-2">{credits[0].toLocaleString()} credits</div>
       </div>
 
-      <Button onClick={handleApply} className="w-full">
+      <Button onClick={handleApply} className="w-full h-12 text-base font-semibold">
         <Search className="mr-2 h-4 w-4" />
         Apply Filters
       </Button>
@@ -345,14 +345,18 @@ export default function ResultsClient({ regions }: { regions: Region[] }) {
                     Filters
                   </Button>
                 </SheetTrigger>
-                <SheetContent>
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Filters</h2>
-                  <FilterContent
-                    regions={regions}
-                    onApplyFilters={handleApplyFilters}
-                    onToggleExpand={() => setIsExpandedView(!isExpandedView)}
-                    isExpanded={isExpandedView}
-                  />
+                <SheetContent className="w-full max-w-none h-full overflow-y-auto">
+                  <div className="h-full flex flex-col">
+                    <SheetTitle className="text-lg font-semibold text-gray-900 mb-6 px-4 pt-4">Filters</SheetTitle>
+                    <div className="flex-1 overflow-y-auto">
+                      <FilterContent
+                        regions={regions}
+                        onApplyFilters={handleApplyFilters}
+                        onToggleExpand={() => setIsExpandedView(!isExpandedView)}
+                        isExpanded={isExpandedView}
+                      />
+                    </div>
+                  </div>
                 </SheetContent>
               </Sheet>
             </div>
