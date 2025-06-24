@@ -259,7 +259,7 @@ export function HomeClient({
           
           <div className="text-center mt-6">
             <p className="text-xs text-gray-500">
-              Data last updated: June 23 4pm, 2025
+              Data last updated: June 24 11am, 2025
             </p>
           </div>
         </div>
