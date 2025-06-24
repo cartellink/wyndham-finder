@@ -16,17 +16,17 @@ fi
 
 echo "Dumping availabilities from local database..."
 # Use docker to run pg_dump with the correct PostgreSQL version
+# Removed --inserts flag to use COPY format (much faster)
 docker run --rm --network host -v "$(pwd):/workspace" postgres:17 \
     pg_dump "$LOCAL_DB_URL" \
     --table=availabilities \
     --data-only \
-    --inserts \
     --no-owner \
     --no-privileges \
     --file="/workspace/$DUMP_FILE"
 
-echo "Truncating availabilities table in production..."
-psql "$PROD_SUPABASE_DB_URL" -c "TRUNCATE TABLE availabilities RESTART IDENTITY CASCADE;"
+# echo "Truncating availabilities table in production..."
+# psql "$PROD_SUPABASE_DB_URL" -c "TRUNCATE TABLE availabilities RESTART IDENTITY CASCADE;"
 
 echo "Importing availabilities to production..."
 psql "$PROD_SUPABASE_DB_URL" -f "$DUMP_FILE"
